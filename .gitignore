@@ -1,0 +1,8 @@
+# Vendor
+/vendor/
+
+# Env
+/.env
+
+# Cache/temp
+/storage/
