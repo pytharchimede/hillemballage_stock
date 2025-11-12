@@ -67,3 +67,19 @@ input{width:100%;padding:10px;border-radius:10px;border:1px solid #ddd}
 	#mainNav.open{display:block}
 	#mainNav a, #mainNav .logout{display:block;margin:8px 0}
 }
+
+/* --- Dropzone styles --- */
+.dropzone {border:2px dashed var(--primary-end);padding:1rem;text-align:center;cursor:pointer;position:relative;background:rgba(255,255,255,0.7);transition:border-color .2s, background .2s;border-radius:8px}
+.dropzone.drag {background:rgba(255, 204, 128, 0.25);border-color:var(--accent)}
+.dropzone .dz-label{color:#666}
+.dropzone.has-image .dz-label { display:none }
+.dropzone img { margin-top:.5rem;border-radius:4px;box-shadow:0 2px 4px rgba(0,0,0,.15) }
+
+/* --- Readonly input --- */
+input.readonly[readonly] { background:#f4f4f4; color:#555 }
+
+/* --- Select search wrapper --- */
+.select-search { display:flex; flex-direction:column; gap:.4rem }
+.select-search input { padding:.45rem .6rem; border:1px solid #ccc; border-radius:6px }
+.select-search select { width:100%; border:1px solid #ccc; border-radius:6px; padding:.4rem; font-size:.9rem }
+.select-search select option { padding:.25rem .4rem }

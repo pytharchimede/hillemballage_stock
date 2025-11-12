@@ -36,6 +36,7 @@ return [
             'name' => ['type' => 'varchar', 'length' => 150],
             'sku' => ['type' => 'varchar', 'length' => 60],
             'unit_price' => ['type' => 'int'], // prix unitaire (entier pour simplifier)
+            'image_path' => ['type' => 'varchar', 'length' => 255, 'nullable' => true],
             'created_at' => ['type' => 'datetime', 'default' => 'CURRENT_TIMESTAMP'],
             'updated_at' => ['type' => 'datetime', 'nullable' => true],
         ],
@@ -59,6 +60,7 @@ return [
             'phone' => ['type' => 'varchar', 'length' => 40, 'nullable' => true],
             'latitude' => ['type' => 'decimal', 'length' => '10,7', 'nullable' => true],
             'longitude' => ['type' => 'decimal', 'length' => '10,7', 'nullable' => true],
+            'photo_path' => ['type' => 'varchar', 'length' => 255, 'nullable' => true],
             'created_at' => ['type' => 'datetime', 'default' => 'CURRENT_TIMESTAMP'],
             'updated_at' => ['type' => 'datetime', 'nullable' => true],
         ],
@@ -114,5 +116,31 @@ return [
             'created_at' => ['type' => 'datetime', 'default' => 'CURRENT_TIMESTAMP'],
         ],
         'indexes' => ['PRIMARY KEY (`id`)', 'KEY `stock_movements_depot_fk` (`depot_id`)', 'KEY `stock_movements_product_fk` (`product_id`)']
+    ],
+    // Commandes (approvisionnements) pour augmenter le stock
+    'orders' => [
+        'columns' => [
+            'id' => ['type' => 'int', 'unsigned' => true, 'extra' => 'AUTO_INCREMENT'],
+            'reference' => ['type' => 'varchar', 'length' => 60],
+            'supplier' => ['type' => 'varchar', 'length' => 150, 'nullable' => true],
+            'status' => ['type' => 'varchar', 'length' => 30, 'default' => 'pending'], // pending, received, partial
+            'total_amount' => ['type' => 'int', 'default' => 0],
+            'ordered_at' => ['type' => 'datetime', 'default' => 'CURRENT_TIMESTAMP'],
+            'created_at' => ['type' => 'datetime', 'default' => 'CURRENT_TIMESTAMP'],
+            'updated_at' => ['type' => 'datetime', 'nullable' => true],
+        ],
+        'indexes' => ['PRIMARY KEY (`id`)', 'UNIQUE KEY `orders_ref_unique` (`reference`)']
+    ],
+    'order_items' => [
+        'columns' => [
+            'id' => ['type' => 'int', 'unsigned' => true, 'extra' => 'AUTO_INCREMENT'],
+            'order_id' => ['type' => 'int', 'unsigned' => true],
+            'product_id' => ['type' => 'int', 'unsigned' => true],
+            'quantity' => ['type' => 'int'],
+            'unit_cost' => ['type' => 'int'],
+            'subtotal' => ['type' => 'int'],
+            'created_at' => ['type' => 'datetime', 'default' => 'CURRENT_TIMESTAMP'],
+        ],
+        'indexes' => ['PRIMARY KEY (`id`)', 'KEY `order_items_order_fk` (`order_id`)', 'KEY `order_items_product_fk` (`product_id`)']
     ],
 ];

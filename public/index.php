@@ -46,6 +46,35 @@ function selfAdjustStock(int $depotId, int $productId, string $type, int $qty): 
     DB::execute("UPDATE stocks SET quantity = GREATEST(0, quantity $op :q), updated_at = NOW() WHERE depot_id = :d AND product_id = :p", [':q' => $qty, ':d' => $depotId, ':p' => $productId]);
 }
 
+function requireRole(array $user, array $roles)
+{
+    if (!in_array($user['role'] ?? '', $roles, true)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Forbidden']);
+        exit;
+    }
+}
+
+function save_upload(string $field, string $subdir = 'uploads'): ?string
+{
+    if (empty($_FILES[$field]) || ($_FILES[$field]['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        return null;
+    }
+    $name = $_FILES[$field]['name'];
+    $tmp = $_FILES[$field]['tmp_name'];
+    $ext = pathinfo($name, PATHINFO_EXTENSION);
+    $safeExt = preg_replace('/[^a-zA-Z0-9]/', '', $ext);
+    $filename = uniqid('f_', true) . ($safeExt ? ('.' . strtolower($safeExt)) : '');
+    $dir = __DIR__ . DIRECTORY_SEPARATOR . $subdir;
+    if (!is_dir($dir)) @mkdir($dir, 0777, true);
+    $dest = $dir . DIRECTORY_SEPARATOR . $filename;
+    if (!move_uploaded_file($tmp, $dest)) {
+        return null;
+    }
+    // Web path
+    return '/' . trim($subdir, '/') . '/' . $filename;
+}
+
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 // Normaliser le chemin quand l'appli est servie dans un sous-dossier (/hill_new/public/)
 $base = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/'); // ex: /hill_new/public
@@ -94,6 +123,25 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode($rows);
         exit;
     }
+    // Create depot (admin)
+    if ($path === '/api/v1/depots' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $u = requireAuth();
+        requireRole($u, ['admin']);
+        $data = $_POST ?: (json_decode(file_get_contents('php://input'), true) ?: []);
+        DB::execute('INSERT INTO depots(name,code,created_at) VALUES(:n,:c,NOW())', [':n' => $data['name'] ?? 'Dépôt', ':c' => $data['code'] ?? uniqid('D')]);
+        echo json_encode(['created' => true]);
+        exit;
+    }
+    // Update depot info (admin)
+    if (preg_match('#^/api/v1/depots/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
+        $u = requireAuth();
+        requireRole($u, ['admin']);
+        $id = (int)$m[1];
+        $data = json_decode(file_get_contents('php://input'), true) ?: [];
+        DB::execute('UPDATE depots SET name=:n, code=:c, updated_at=NOW() WHERE id=:id', [':n' => $data['name'] ?? 'Depot', ':c' => $data['code'] ?? '', ':id' => $id]);
+        echo json_encode(['updated' => true]);
+        exit;
+    }
     // Depots geo update
     if (preg_match('#^/api/v1/depots/(\d+)/geo$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
         requireAuth();
@@ -106,23 +154,50 @@ if (str_starts_with($path, '/api/v1')) {
     // Clients listing
     if ($path === '/api/v1/clients' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         requireAuth();
-        $rows = DB::query('SELECT id,name,phone,latitude,longitude,created_at FROM clients ORDER BY id DESC');
+        $rows = DB::query('SELECT id,name,phone,latitude,longitude,photo_path,created_at FROM clients ORDER BY id DESC');
         echo json_encode($rows);
         exit;
     }
     // Create client
     if ($path === '/api/v1/clients' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $auth = requireAuth();
-        $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
+        $data = $_POST ?: (json_decode(file_get_contents('php://input'), true) ?: []);
+        $photo = save_upload('photo');
         $cModel = new Client();
         $id = $cModel->insert([
             'name' => $data['name'] ?? 'Client',
             'phone' => $data['phone'] ?? null,
             'latitude' => $data['latitude'] ?? null,
             'longitude' => $data['longitude'] ?? null,
+            'photo_path' => $photo,
             'created_at' => date('Y-m-d H:i:s')
         ]);
-        echo json_encode(['id' => $id]);
+        echo json_encode(['id' => $id, 'photo_path' => $photo]);
+        exit;
+    }
+    // Update client basic info / photo
+    if (preg_match('#^/api/v1/clients/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
+        $auth = requireAuth();
+        $id = (int)$m[1];
+        // Support JSON or multipart (photo)
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        if (stripos($contentType, 'application/json') !== false) {
+            $data = json_decode(file_get_contents('php://input'), true) ?: [];
+            DB::execute('UPDATE clients SET name=:n, phone=:p, updated_at=NOW() WHERE id=:id', [':n' => $data['name'] ?? 'Client', ':p' => $data['phone'] ?? null, ':id' => $id]);
+            echo json_encode(['updated' => true]);
+        } else {
+            $data = $_POST;
+            $photo = save_upload('photo');
+            $params = [':n' => $data['name'] ?? 'Client', ':p' => $data['phone'] ?? null, ':id' => $id];
+            $sql = 'UPDATE clients SET name=:n, phone=:p';
+            if ($photo) {
+                $sql .= ', photo_path=:ph';
+                $params[':ph'] = $photo;
+            }
+            $sql .= ', updated_at=NOW() WHERE id=:id';
+            DB::execute($sql, $params);
+            echo json_encode(['updated' => true, 'photo_path' => $photo]);
+        }
         exit;
     }
     // Update client geo
@@ -243,6 +318,177 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode(DB::query($sql, $p));
         exit;
     }
+    // Products listing
+    if ($path === '/api/v1/products' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        requireAuth();
+        $rows = DB::query('SELECT id,name,sku,unit_price,image_path FROM products ORDER BY id DESC');
+        echo json_encode($rows);
+        exit;
+    }
+    // Create product (admin) + image upload
+    if ($path === '/api/v1/products' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $u = requireAuth();
+        requireRole($u, ['admin']);
+        $data = $_POST ?: (json_decode(file_get_contents('php://input'), true) ?: []);
+        $img = save_upload('image', 'uploads/products');
+        // Auto SKU if not provided: 3 letters of name + time base36
+        $rawName = trim($data['name'] ?? 'Produit');
+        $prefix = strtoupper(substr(preg_replace('/[^A-Za-z0-9]/', '', $rawName) ?: 'PRD', 0, 3));
+        $autoSku = $prefix . '-' . strtoupper(base_convert((string)time(), 10, 36));
+        $sku = ($data['sku'] ?? '') ?: $autoSku;
+        DB::execute('INSERT INTO products(name,sku,unit_price,image_path,created_at) VALUES(:n,:s,:p,:img,NOW())', [':n' => $rawName, ':s' => $sku, ':p' => (int)($data['unit_price'] ?? 0), ':img' => $img]);
+        $pid = (int)DB::query('SELECT LAST_INSERT_ID() id')[0]['id'];
+        // Optional initial stock entry
+        if (!empty($data['initial_quantity'])) {
+            $qty = (int)$data['initial_quantity'];
+            $dep = (int)($data['depot_id'] ?? 1);
+            if ($qty > 0) {
+                (new StockMovement())->move($dep, $pid, 'in', $qty, date('Y-m-d H:i:s'), null, 'initial');
+                Stock::adjust($dep, $pid, 'in', $qty);
+            }
+        }
+        echo json_encode(['created' => true, 'id' => $pid, 'sku' => $sku, 'image_path' => $img]);
+        exit;
+    }
+    // Get single product
+    if (preg_match('#^/api/v1/products/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        requireAuth();
+        $id = (int)$m[1];
+        $row = DB::query('SELECT id,name,sku,unit_price,image_path FROM products WHERE id=:id', [':id' => $id])[0] ?? null;
+        if (!$row) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Not found']);
+            exit;
+        }
+        echo json_encode($row);
+        exit;
+    }
+    // Update product (admin)
+    if (preg_match('#^/api/v1/products/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
+        $u = requireAuth();
+        requireRole($u, ['admin']);
+        $id = (int)$m[1];
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        if (stripos($contentType, 'application/json') !== false) {
+            $data = json_decode(file_get_contents('php://input'), true) ?: [];
+            DB::execute('UPDATE products SET name=:n, sku=:s, unit_price=:p, updated_at=NOW() WHERE id=:id', [':n' => $data['name'] ?? 'Produit', ':s' => $data['sku'] ?? '', ':p' => (int)($data['unit_price'] ?? 0), ':id' => $id]);
+            echo json_encode(['updated' => true]);
+        } else {
+            $data = $_POST;
+            $img = save_upload('image', 'uploads/products');
+            $params = [':n' => $data['name'] ?? 'Produit', ':s' => $data['sku'] ?? '', ':p' => (int)($data['unit_price'] ?? 0), ':id' => $id];
+            $sql = 'UPDATE products SET name=:n, sku=:s, unit_price=:p';
+            if ($img) {
+                $sql .= ', image_path=:img';
+                $params[':img'] = $img;
+            }
+            $sql .= ', updated_at=NOW() WHERE id=:id';
+            DB::execute($sql, $params);
+            echo json_encode(['updated' => true, 'image_path' => $img]);
+        }
+        exit;
+    }
+    // Users management (admin)
+    if ($path === '/api/v1/users' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $u = requireAuth();
+        requireRole($u, ['admin']);
+        $rows = DB::query('SELECT id,name,email,role,depot_id,created_at FROM users ORDER BY id DESC');
+        echo json_encode($rows);
+        exit;
+    }
+    if ($path === '/api/v1/users' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $u = requireAuth();
+        requireRole($u, ['admin']);
+        $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
+        $hash = password_hash($data['password'] ?? 'secret123', PASSWORD_BCRYPT);
+        DB::execute('INSERT INTO users(name,email,password_hash,role,depot_id,created_at) VALUES(:n,:e,:h,:r,:d,NOW())', [':n' => $data['name'] ?? 'User', ':e' => $data['email'] ?? '', ':h' => $hash, ':r' => $data['role'] ?? 'gerant', ':d' => (int)($data['depot_id'] ?? 1)]);
+        echo json_encode(['created' => true]);
+        exit;
+    }
+    if (preg_match('#^/api/v1/users/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
+        $u = requireAuth();
+        requireRole($u, ['admin']);
+        $id = (int)$m[1];
+        $data = json_decode(file_get_contents('php://input'), true) ?: [];
+        $sets = ['name=:n', 'email=:e', 'role=:r', 'depot_id=:d'];
+        $params = [':n' => $data['name'] ?? null, ':e' => $data['email'] ?? null, ':r' => $data['role'] ?? null, ':d' => (int)($data['depot_id'] ?? 0), ':id' => $id];
+        if (!empty($data['password'])) {
+            $sets[] = 'password_hash=:h';
+            $params[':h'] = password_hash($data['password'], PASSWORD_BCRYPT);
+        }
+        DB::execute('UPDATE users SET ' . implode(',', $sets) . ', updated_at=NOW() WHERE id=:id', $params);
+        echo json_encode(['updated' => true]);
+        exit;
+    }
+    // Orders (commandes, réception direct + stock IN)
+    if ($path === '/api/v1/orders' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $u = requireAuth();
+        requireRole($u, ['admin', 'gerant']);
+        $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
+        $items = $data['items'] ?? [];
+        if (!$items) {
+            http_response_code(422);
+            echo json_encode(['error' => 'Items required']);
+            exit;
+        }
+        $ref = $data['reference'] ?? strtoupper(substr(md5(uniqid()), 0, 8));
+        $supplier = $data['supplier'] ?? null;
+        $total = 0;
+        foreach ($items as $it) {
+            $total += ((int)$it['unit_cost'] * (int)$it['quantity']);
+        }
+        DB::execute('INSERT INTO orders(reference,supplier,status,total_amount,ordered_at,created_at) VALUES(:r,:s,\'received\',:t,NOW(),NOW())', [':r' => $ref, ':s' => $supplier, ':t' => $total]);
+        $orderId = (int)DB::query('SELECT LAST_INSERT_ID() id')[0]['id'];
+        foreach ($items as $it) {
+            DB::execute('INSERT INTO order_items(order_id,product_id,quantity,unit_cost,subtotal,created_at) VALUES(:o,:p,:q,:c,:st,NOW())', [':o' => $orderId, ':p' => (int)$it['product_id'], ':q' => (int)$it['quantity'], ':c' => (int)$it['unit_cost'], ':st' => ((int)$it['unit_cost'] * (int)$it['quantity'])]);
+            // Default to depot 1 for now (could be provided in payload later)
+            $depotId = (int)($data['depot_id'] ?? 1);
+            (new StockMovement())->move($depotId, (int)$it['product_id'], 'in', (int)$it['quantity'], date('Y-m-d H:i:s'), null, 'order:' . $ref);
+            Stock::adjust($depotId, (int)$it['product_id'], 'in', (int)$it['quantity']);
+        }
+        echo json_encode(['order_id' => $orderId, 'reference' => $ref]);
+        exit;
+    }
+    if ($path === '/api/v1/orders' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        requireAuth();
+        $rows = DB::query('SELECT id,reference,supplier,status,total_amount,ordered_at FROM orders ORDER BY ordered_at DESC LIMIT 200');
+        echo json_encode($rows);
+        exit;
+    }
+    // Stock transfer endpoint
+    if ($path === '/api/v1/stock/transfer' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $u = requireAuth();
+        requireRole($u, ['admin', 'gerant']);
+        $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
+        foreach (['from_depot_id', 'to_depot_id', 'product_id', 'quantity'] as $f) {
+            if (empty($data[$f])) {
+                http_response_code(422);
+                echo json_encode(['error' => 'Missing ' . $f]);
+                exit;
+            }
+        }
+        $from = (int)$data['from_depot_id'];
+        $to = (int)$data['to_depot_id'];
+        $pid = (int)$data['product_id'];
+        $qty = (int)$data['quantity'];
+        if ($qty <= 0) {
+            http_response_code(422);
+            echo json_encode(['error' => 'Qty must be > 0']);
+            exit;
+        }
+        $available = Stock::available($from, $pid);
+        if ($available < $qty) {
+            http_response_code(422);
+            echo json_encode(['error' => 'INSUFFICIENT_STOCK', 'available' => $available]);
+            exit;
+        }
+        (new StockMovement())->move($from, $pid, 'transfer', $qty, date('Y-m-d H:i:s'), null, 'to:' . $to);
+        Stock::adjust($from, $pid, 'out', $qty);
+        (new StockMovement())->move($to, $pid, 'in', $qty, date('Y-m-d H:i:s'), null, 'from:' . $from);
+        Stock::adjust($to, $pid, 'in', $qty);
+        echo json_encode(['transferred' => true, 'from' => $from, 'to' => $to, 'product_id' => $pid, 'quantity' => $qty]);
+        exit;
+    }
     if ($path === '/api/v1/reports/daily') {
         $depotId = (int)($_GET['depot_id'] ?? 1);
         $date = $_GET['date'] ?? date('Y-m-d');
@@ -356,6 +602,58 @@ if ($path === '/depots/map') {
     }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/depots_map.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+
+// Admin pages (simple CRUD)
+if ($path === '/products') {
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/products.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+if ($path === '/products/new') {
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/products_new.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+if ($path === '/products/edit') {
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/products_edit.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+if ($path === '/clients') {
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/clients.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+if ($path === '/users') {
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/users.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+if ($path === '/depots') {
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/depots.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+if ($path === '/orders') {
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/orders.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+
+// Stock transfers page
+if ($path === '/transfers') {
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/transfers.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }
