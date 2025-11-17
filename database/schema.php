@@ -65,6 +65,7 @@ return [
             'id' => ['type' => 'int', 'unsigned' => true, 'extra' => 'AUTO_INCREMENT'],
             'name' => ['type' => 'varchar', 'length' => 150],
             'phone' => ['type' => 'varchar', 'length' => 40, 'nullable' => true],
+            'address' => ['type' => 'varchar', 'length' => 255, 'nullable' => true],
             'latitude' => ['type' => 'decimal', 'length' => '10,7', 'nullable' => true],
             'longitude' => ['type' => 'decimal', 'length' => '10,7', 'nullable' => true],
             'photo_path' => ['type' => 'varchar', 'length' => 255, 'nullable' => true],

@@ -302,24 +302,33 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode(['updated' => true]);
         exit;
     }
-    // Clients listing
+    // Clients listing (with balance)
     if ($path === '/api/v1/clients' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         requireAuth();
-        $rows = DB::query('SELECT id,name,phone,latitude,longitude,photo_path,created_at FROM clients ORDER BY id DESC');
+        $rows = DB::query('SELECT c.id,c.name,c.phone,c.address,c.latitude,c.longitude,c.photo_path,c.created_at,
+            (SELECT COALESCE(SUM(s.total_amount) - SUM(s.amount_paid), 0) FROM sales s WHERE s.client_id = c.id) AS balance
+            FROM clients c ORDER BY c.id DESC');
         echo json_encode($rows);
         exit;
     }
-    // Create client
+    // Create client (supports JSON and multipart)
     if ($path === '/api/v1/clients' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $auth = requireAuth();
-        $data = json_decode(file_get_contents('php://input'), true) ?: [];
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        $data = [];
+        if (stripos($contentType, 'application/json') !== false) {
+            $data = json_decode(file_get_contents('php://input'), true) ?: [];
+        } else {
+            $data = $_POST ?: (json_decode(file_get_contents('php://input'), true) ?: []);
+        }
         $photo = save_upload('photo');
         $cModel = new Client();
         $id = $cModel->insert([
             'name' => $data['name'] ?? 'Client',
             'phone' => $data['phone'] ?? null,
-            'latitude' => $data['latitude'] ?? null,
-            'longitude' => $data['longitude'] ?? null,
+            'address' => $data['address'] ?? null,
+            'latitude' => isset($data['latitude']) ? $data['latitude'] : null,
+            'longitude' => isset($data['longitude']) ? $data['longitude'] : null,
             'photo_path' => $photo,
             'created_at' => date('Y-m-d H:i:s')
         ]);
@@ -334,13 +343,13 @@ if (str_starts_with($path, '/api/v1')) {
         $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
         if (stripos($contentType, 'application/json') !== false) {
             $data = json_decode(file_get_contents('php://input'), true) ?: [];
-            DB::execute('UPDATE clients SET name=:n, phone=:p, updated_at=NOW() WHERE id=:id', [':n' => $data['name'] ?? 'Client', ':p' => $data['phone'] ?? null, ':id' => $id]);
+            DB::execute('UPDATE clients SET name=:n, phone=:p, address=:a, updated_at=NOW() WHERE id=:id', [':n' => $data['name'] ?? 'Client', ':p' => $data['phone'] ?? null, ':a' => $data['address'] ?? null, ':id' => $id]);
             echo json_encode(['updated' => true]);
         } else {
             $data = $_POST;
             $photo = save_upload('photo');
-            $params = [':n' => $data['name'] ?? 'Client', ':p' => $data['phone'] ?? null, ':id' => $id];
-            $sql = 'UPDATE clients SET name=:n, phone=:p';
+            $params = [':n' => $data['name'] ?? 'Client', ':p' => $data['phone'] ?? null, ':a' => $data['address'] ?? null, ':id' => $id];
+            $sql = 'UPDATE clients SET name=:n, phone=:p, address=:a';
             if ($photo) {
                 $sql .= ', photo_path=:ph';
                 $params[':ph'] = $photo;
@@ -349,6 +358,21 @@ if (str_starts_with($path, '/api/v1')) {
             DB::execute($sql, $params);
             echo json_encode(['updated' => true, 'photo_path' => $photo]);
         }
+        exit;
+    }
+    // Get single client (with balance)
+    if (preg_match('#^/api/v1/clients/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        requireAuth();
+        $id = (int)$m[1];
+        $row = DB::query('SELECT c.id,c.name,c.phone,c.address,c.latitude,c.longitude,c.photo_path,c.created_at,
+                (SELECT COALESCE(SUM(s.total_amount) - SUM(s.amount_paid), 0) FROM sales s WHERE s.client_id = c.id) AS balance
+            FROM clients c WHERE c.id = :id LIMIT 1', [':id' => $id])[0] ?? null;
+        if (!$row) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Not found']);
+            exit;
+        }
+        echo json_encode($row);
         exit;
     }
     // Update client geo
@@ -927,6 +951,18 @@ if ($path === '/products/view') {
 if ($path === '/clients') {
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/clients.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+if ($path === '/clients/new') {
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/clients_form.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+if ($path === '/clients/edit') {
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/clients_form.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }
