@@ -20,4 +20,6 @@ $assetBase = preg_replace('#/public$#', '', $scriptDir);
     window.ROUTE_BASE = "<?= $routeBase ?>";
     window.ASSET_BASE = "<?= $assetBase ?>";
 </script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous" />
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"></script>
 <script src="<?= $assetBase ?>/assets/js/depots.js"></script>

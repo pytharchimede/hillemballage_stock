@@ -70,7 +70,7 @@
           : `<button class="btn btn-outline-main btn-set-main" data-id="${d.id}"><i class="fas fa-star"></i> Définir principal</button>`;
         const thumb =
           d.latitude && d.longitude
-            ? `<div class="thumb"><img alt="carte" src="https://staticmap.openstreetmap.de/staticmap.php?center=${d.latitude},${d.longitude}&zoom=14&size=480x220&markers=${d.latitude},${d.longitude},lightblue1"></div>`
+            ? `<div class="thumb mini-thumb" data-lat="${d.latitude}" data-lon="${d.longitude}"></div>`
             : `<div class="thumb"><i class="fas fa-map" style="color:#bbb; font-size:26px"></i></div>`;
         const viewBtn =
           d.latitude && d.longitude
@@ -98,6 +98,8 @@
         </div>`;
       })
       .join("");
+    // Initialize mini Leaflet maps for thumbnails
+    initThumbLeaflets();
   }
 
   function applyFilter() {
@@ -105,6 +107,9 @@
     const q = (s && s.value ? s.value : "").trim().toLowerCase();
     if (!q) {
       render(stateDepots);
+      // Wire thumbnails: fallback to mini Leaflet map if static image fails
+      // Initialize mini Leaflet maps for thumbnails
+      initThumbLeaflets();
       return;
     }
     const filtered = stateDepots.filter((d) => {
@@ -187,4 +192,36 @@
   }
 
   load();
+
+  // Initialize embedded Leaflet mini-maps on depot thumbnails
+  function initThumbLeaflets() {
+    if (typeof L === "undefined") return;
+    const thumbs = document.querySelectorAll(".thumb.mini-thumb");
+    thumbs.forEach((t) => {
+      if (t._mapInit) return;
+      const lat = parseFloat(t.getAttribute("data-lat") || "0");
+      const lon = parseFloat(t.getAttribute("data-lon") || "0");
+      if (!lat || !lon) return;
+      try {
+        t._mapInit = true;
+        const map = L.map(t, {
+          zoomControl: false,
+          attributionControl: false,
+          dragging: false,
+          scrollWheelZoom: false,
+          doubleClickZoom: false,
+          boxZoom: false,
+          keyboard: false,
+          tap: false,
+        });
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 19,
+        }).addTo(map);
+        map.setView([lat, lon], 14);
+        L.marker([lat, lon]).addTo(map);
+      } catch (e) {
+        t._mapInit = false;
+      }
+    });
+  }
 })();
