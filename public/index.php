@@ -321,7 +321,7 @@ if (str_starts_with($path, '/api/v1')) {
     // Products listing
     if ($path === '/api/v1/products' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         requireAuth();
-        $rows = DB::query('SELECT id,name,sku,unit_price,image_path FROM products ORDER BY id DESC');
+        $rows = DB::query('SELECT id,name,sku,unit_price,description,image_path FROM products ORDER BY id DESC');
         echo json_encode($rows);
         exit;
     }
@@ -336,7 +336,7 @@ if (str_starts_with($path, '/api/v1')) {
         $prefix = strtoupper(substr(preg_replace('/[^A-Za-z0-9]/', '', $rawName) ?: 'PRD', 0, 3));
         $autoSku = $prefix . '-' . strtoupper(base_convert((string)time(), 10, 36));
         $sku = ($data['sku'] ?? '') ?: $autoSku;
-        DB::execute('INSERT INTO products(name,sku,unit_price,image_path,created_at) VALUES(:n,:s,:p,:img,NOW())', [':n' => $rawName, ':s' => $sku, ':p' => (int)($data['unit_price'] ?? 0), ':img' => $img]);
+        DB::execute('INSERT INTO products(name,sku,unit_price,description,image_path,created_at) VALUES(:n,:s,:p,:d,:img,NOW())', [':n' => $rawName, ':s' => $sku, ':p' => (int)($data['unit_price'] ?? 0), ':d' => ($data['description'] ?? null), ':img' => $img]);
         $pid = (int)DB::query('SELECT LAST_INSERT_ID() id')[0]['id'];
         // Optional initial stock entry
         if (!empty($data['initial_quantity'])) {
@@ -354,7 +354,7 @@ if (str_starts_with($path, '/api/v1')) {
     if (preg_match('#^/api/v1/products/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
         requireAuth();
         $id = (int)$m[1];
-        $row = DB::query('SELECT id,name,sku,unit_price,image_path FROM products WHERE id=:id', [':id' => $id])[0] ?? null;
+        $row = DB::query('SELECT id,name,sku,unit_price,description,image_path FROM products WHERE id=:id', [':id' => $id])[0] ?? null;
         if (!$row) {
             http_response_code(404);
             echo json_encode(['error' => 'Not found']);
@@ -371,13 +371,13 @@ if (str_starts_with($path, '/api/v1')) {
         $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
         if (stripos($contentType, 'application/json') !== false) {
             $data = json_decode(file_get_contents('php://input'), true) ?: [];
-            DB::execute('UPDATE products SET name=:n, sku=:s, unit_price=:p, updated_at=NOW() WHERE id=:id', [':n' => $data['name'] ?? 'Produit', ':s' => $data['sku'] ?? '', ':p' => (int)($data['unit_price'] ?? 0), ':id' => $id]);
+            DB::execute('UPDATE products SET name=:n, sku=:s, unit_price=:p, description=:d, updated_at=NOW() WHERE id=:id', [':n' => $data['name'] ?? 'Produit', ':s' => $data['sku'] ?? '', ':p' => (int)($data['unit_price'] ?? 0), ':d' => ($data['description'] ?? null), ':id' => $id]);
             echo json_encode(['updated' => true]);
         } else {
             $data = $_POST;
             $img = save_upload('image', 'uploads/products');
-            $params = [':n' => $data['name'] ?? 'Produit', ':s' => $data['sku'] ?? '', ':p' => (int)($data['unit_price'] ?? 0), ':id' => $id];
-            $sql = 'UPDATE products SET name=:n, sku=:s, unit_price=:p';
+            $params = [':n' => $data['name'] ?? 'Produit', ':s' => $data['sku'] ?? '', ':p' => (int)($data['unit_price'] ?? 0), ':d' => ($data['description'] ?? null), ':id' => $id];
+            $sql = 'UPDATE products SET name=:n, sku=:s, unit_price=:p, description=:d';
             if ($img) {
                 $sql .= ', image_path=:img';
                 $params[':img'] = $img;

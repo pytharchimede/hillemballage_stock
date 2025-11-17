@@ -50,6 +50,9 @@ input{width:100%;padding:10px;border-radius:10px;border:1px solid #ddd}
 .big{font-size:2rem;font-weight:800;color:#333}
 .muted{color:#777}
 
+/* Inputs */
+textarea{width:100%;padding:10px;border-radius:10px;border:1px solid #ddd;font-family:inherit;resize:vertical;min-height:96px}
+
 /* Badges per design */
 .badge-main-depot{background:var(--badge-main-bg);border:1px solid var(--badge-main-border);color:var(--badge-main-color);padding:.25rem .5rem;border-radius:999px;font-size:.85rem;display:inline-flex;align-items:center;gap:.35rem}
 .badge-depot{background:var(--badge-depot-bg);border:1px solid var(--badge-depot-border);color:var(--badge-depot-color);padding:.25rem .5rem;border-radius:999px;font-size:.85rem;display:inline-flex;align-items:center;gap:.35rem}

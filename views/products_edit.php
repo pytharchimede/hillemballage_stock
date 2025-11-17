@@ -17,6 +17,9 @@ $id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
             <label>Prix unitaire
                 <input type="number" name="unit_price" min="0" step="1" required>
             </label>
+            <label>Description
+                <textarea name="description" id="prod-desc" rows="3" placeholder="Description du produit (optionnel)"></textarea>
+            </label>
             <label>Image (remplacer)
                 <input type="file" name="image" accept="image/*">
             </label>

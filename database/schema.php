@@ -36,6 +36,7 @@ return [
             'name' => ['type' => 'varchar', 'length' => 150],
             'sku' => ['type' => 'varchar', 'length' => 60],
             'unit_price' => ['type' => 'int'], // prix unitaire (entier pour simplifier)
+            'description' => ['type' => 'text', 'nullable' => true],
             'image_path' => ['type' => 'varchar', 'length' => 255, 'nullable' => true],
             'created_at' => ['type' => 'datetime', 'default' => 'CURRENT_TIMESTAMP'],
             'updated_at' => ['type' => 'datetime', 'nullable' => true],

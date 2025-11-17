@@ -25,15 +25,24 @@ $routeBase = $scriptDir;
             </label>
         </div>
         <div class="form-row">
+            <label>Description
+                <textarea name="description" id="prod-desc" rows="3" placeholder="Description du produit (optionnel)"></textarea>
+            </label>
+        </div>
+        <div class="form-row">
             <label>Quantité initiale (optionnel)
                 <input type="number" name="initial_quantity" min="0" step="1" placeholder="0">
             </label>
             <label>Dépôt
                 <div class="select-search" id="depot-select-wrapper">
                     <input type="text" id="depot-search" placeholder="Rechercher dépôt..." autocomplete="off" />
+                    <div id="depot-loading" class="muted" style="display:none;margin:.25rem 0">Chargement des dépôts…</div>
                     <select name="depot_id" id="depot-select" size="4" required></select>
                 </div>
             </label>
+        </div>
+        <div id="depot-empty-alert" class="alert alert-warning" style="display:none">
+            Aucun dépôt trouvé. Veuillez <a href="<?= $routeBase ?>/depots">créer un dépôt</a> avant d'ajouter un stock initial.
         </div>
         <div class="actions">
             <button class="btn" type="submit">Créer</button>
