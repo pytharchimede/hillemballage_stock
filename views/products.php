@@ -4,21 +4,14 @@ $assetBase = preg_replace('#/public$#', '', $scriptDir);
 $routeBase = $scriptDir;
 ?>
 <h1>Produits</h1>
-<p><a class="btn" href="<?= $routeBase ?>/products/new"><i class="fa fa-plus"></i> Nouveau produit</a></p>
+<p style="display:flex; gap:.5rem; align-items:center; flex-wrap:wrap">
+    <a class="btn" href="<?= $routeBase ?>/products/new"><i class="fa fa-plus"></i> Nouveau produit</a>
+    <button class="btn secondary" id="fix-img-btn" title="Normaliser les chemins d'images (admin)"><i class="fa fa-wrench"></i> Normaliser images</button>
+    <span id="fix-img-status" class="muted" style="display:none"></span>
+</p>
 <section class="card">
-    <h3>Liste</h3>
-    <table class="excel" id="products-table">
-        <thead>
-            <tr>
-                <th>Image</th>
-                <th>Nom</th>
-                <th>SKU</th>
-                <th>PU</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody></tbody>
-    </table>
+    <div class="cards-grid" id="products-grid"></div>
+    <div id="products-empty" class="muted" style="display:none;padding:.75rem">Aucun produit trouvé.</div>
 </section>
 <script>
     window.ROUTE_BASE = "<?= $routeBase ?>";

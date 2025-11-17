@@ -34,10 +34,11 @@ $routeBase = $scriptDir;
                 <input type="number" name="initial_quantity" min="0" step="1" placeholder="0">
             </label>
             <label>Dépôt
-                <div class="select-search" id="depot-select-wrapper">
-                    <input type="text" id="depot-search" placeholder="Rechercher dépôt..." autocomplete="off" />
+                <div class="select-combo" id="depot-select-wrapper">
+                    <input type="text" id="depot-combo" placeholder="Choisir un dépôt..." autocomplete="off" />
+                    <input type="hidden" name="depot_id" id="depot-id" />
                     <div id="depot-loading" class="muted" style="display:none;margin:.25rem 0">Chargement des dépôts…</div>
-                    <select name="depot_id" id="depot-select" size="4" required></select>
+                    <div id="depot-menu" class="combo-menu" style="display:none"></div>
                 </div>
             </label>
         </div>

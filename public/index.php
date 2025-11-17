@@ -71,8 +71,10 @@ function save_upload(string $field, string $subdir = 'uploads'): ?string
     if (!move_uploaded_file($tmp, $dest)) {
         return null;
     }
-    // Web path
-    return '/' . trim($subdir, '/') . '/' . $filename;
+    // Web path (respect sous-dossier p.ex. /hill_new/public)
+    $base = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/');
+    $web = '/' . trim($subdir, '/') . '/' . $filename;
+    return ($base && $base !== '/' ? $base : '') . $web;
 }
 
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
@@ -98,6 +100,47 @@ if (str_starts_with($path, '/api/v1')) {
     header('Content-Type: application/json');
     if ($path === '/api/v1/health') {
         echo json_encode(['status' => 'ok']);
+        exit;
+    }
+    // Auth: récupérer un token depuis la session web (fallback post-login)
+    if ($path === '/api/v1/auth/session-token' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        if (empty($_SESSION['user_id'])) {
+            http_response_code(401);
+            echo json_encode(['error' => 'No session']);
+            exit;
+        }
+        $uid = (int)$_SESSION['user_id'];
+        $uModel = new User();
+        $token = $uModel->createToken($uid);
+        setcookie('api_token', $token, time() + 3600 * 24 * 7, '/');
+        echo json_encode(['token' => $token]);
+        exit;
+    }
+    // Admin: normaliser les chemins image_path des produits selon le sous-dossier courant
+    if ($path === '/api/v1/admin/fix-product-images' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $u = requireAuth();
+        requireRole($u, ['admin']);
+        $base = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/');
+        $rows = DB::query('SELECT id, image_path FROM products WHERE image_path IS NOT NULL AND image_path <> ""');
+        $normalized = 0;
+        foreach ($rows as $row) {
+            $img = (string)$row['image_path'];
+            // Skip HTTP(S)
+            if (preg_match('#^https?://#i', $img)) continue;
+            // Already prefixed with base
+            if ($base && str_starts_with($img, $base . '/')) continue;
+            // Build new path
+            if (strlen($img) && $img[0] === '/') {
+                $new = ($base && $base !== '/' ? $base : '') . $img;
+            } else {
+                $new = ($base && $base !== '/' ? $base . '/' : '/') . ltrim($img, '/');
+            }
+            if ($new !== $img) {
+                DB::execute('UPDATE products SET image_path = :p, updated_at = NOW() WHERE id = :id', [':p' => $new, ':id' => (int)$row['id']]);
+                $normalized++;
+            }
+        }
+        echo json_encode(['normalized' => $normalized, 'base' => $base]);
         exit;
     }
     // Auth login -> token
@@ -321,7 +364,7 @@ if (str_starts_with($path, '/api/v1')) {
     // Products listing
     if ($path === '/api/v1/products' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         requireAuth();
-        $rows = DB::query('SELECT id,name,sku,unit_price,description,image_path FROM products ORDER BY id DESC');
+        $rows = DB::query('SELECT id,name,sku,unit_price,description,image_path,active FROM products ORDER BY id DESC');
         echo json_encode($rows);
         exit;
     }
@@ -354,7 +397,7 @@ if (str_starts_with($path, '/api/v1')) {
     if (preg_match('#^/api/v1/products/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
         requireAuth();
         $id = (int)$m[1];
-        $row = DB::query('SELECT id,name,sku,unit_price,description,image_path FROM products WHERE id=:id', [':id' => $id])[0] ?? null;
+        $row = DB::query('SELECT id,name,sku,unit_price,description,image_path,active FROM products WHERE id=:id', [':id' => $id])[0] ?? null;
         if (!$row) {
             http_response_code(404);
             echo json_encode(['error' => 'Not found']);
@@ -371,19 +414,60 @@ if (str_starts_with($path, '/api/v1')) {
         $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
         if (stripos($contentType, 'application/json') !== false) {
             $data = json_decode(file_get_contents('php://input'), true) ?: [];
-            DB::execute('UPDATE products SET name=:n, sku=:s, unit_price=:p, description=:d, updated_at=NOW() WHERE id=:id', [':n' => $data['name'] ?? 'Produit', ':s' => $data['sku'] ?? '', ':p' => (int)($data['unit_price'] ?? 0), ':d' => ($data['description'] ?? null), ':id' => $id]);
+            $sets = ['name=:n', 'sku=:s', 'unit_price=:p', 'description=:d'];
+            $params = [
+                ':n' => $data['name'] ?? 'Produit',
+                ':s' => $data['sku'] ?? '',
+                ':p' => (int)($data['unit_price'] ?? 0),
+                ':d' => ($data['description'] ?? null),
+                ':id' => $id
+            ];
+            if (isset($data['active'])) {
+                $sets[] = 'active=:a';
+                $params[':a'] = (int)$data['active'];
+            }
+            $sql = 'UPDATE products SET ' . implode(', ', $sets) . ', updated_at=NOW() WHERE id=:id';
+            DB::execute($sql, $params);
+            // Optional stock in during edit
+            if (!empty($data['initial_quantity'])) {
+                $qty = (int)$data['initial_quantity'];
+                $dep = (int)($data['depot_id'] ?? 0);
+                if ($qty > 0 && $dep > 0) {
+                    (new StockMovement())->move($dep, $id, 'in', $qty, date('Y-m-d H:i:s'), null, 'edit');
+                    Stock::adjust($dep, $id, 'in', $qty);
+                }
+            }
             echo json_encode(['updated' => true]);
         } else {
             $data = $_POST;
             $img = save_upload('image', 'uploads/products');
-            $params = [':n' => $data['name'] ?? 'Produit', ':s' => $data['sku'] ?? '', ':p' => (int)($data['unit_price'] ?? 0), ':d' => ($data['description'] ?? null), ':id' => $id];
-            $sql = 'UPDATE products SET name=:n, sku=:s, unit_price=:p, description=:d';
+            $sets = ['name=:n', 'sku=:s', 'unit_price=:p', 'description=:d'];
+            $params = [
+                ':n' => $data['name'] ?? 'Produit',
+                ':s' => $data['sku'] ?? '',
+                ':p' => (int)($data['unit_price'] ?? 0),
+                ':d' => ($data['description'] ?? null),
+                ':id' => $id
+            ];
             if ($img) {
-                $sql .= ', image_path=:img';
+                $sets[] = 'image_path=:img';
                 $params[':img'] = $img;
             }
-            $sql .= ', updated_at=NOW() WHERE id=:id';
+            if (isset($data['active'])) {
+                $sets[] = 'active=:a';
+                $params[':a'] = (int)$data['active'];
+            }
+            $sql = 'UPDATE products SET ' . implode(', ', $sets) . ', updated_at=NOW() WHERE id=:id';
             DB::execute($sql, $params);
+            // Optional stock in during edit (multipart)
+            if (!empty($data['initial_quantity'])) {
+                $qty = (int)$data['initial_quantity'];
+                $dep = (int)($data['depot_id'] ?? 0);
+                if ($qty > 0 && $dep > 0) {
+                    (new StockMovement())->move($dep, $id, 'in', $qty, date('Y-m-d H:i:s'), null, 'edit');
+                    Stock::adjust($dep, $id, 'in', $qty);
+                }
+            }
             echo json_encode(['updated' => true, 'image_path' => $img]);
         }
         exit;
@@ -622,6 +706,12 @@ if ($path === '/products/new') {
 if ($path === '/products/edit') {
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/products_edit.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+if ($path === '/products/view') {
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/product_view.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }

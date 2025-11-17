@@ -38,6 +38,7 @@ return [
             'unit_price' => ['type' => 'int'], // prix unitaire (entier pour simplifier)
             'description' => ['type' => 'text', 'nullable' => true],
             'image_path' => ['type' => 'varchar', 'length' => 255, 'nullable' => true],
+            'active' => ['type' => 'tinyint', 'unsigned' => true, 'default' => 1],
             'created_at' => ['type' => 'datetime', 'default' => 'CURRENT_TIMESTAMP'],
             'updated_at' => ['type' => 'datetime', 'nullable' => true],
         ],
