@@ -360,15 +360,16 @@
     // Rafraîchir le token juste avant submit
     token = localStorage.getItem("api_token") || readCookieToken() || "";
     const fd = new FormData(form);
+    const isEdit = mode === "edit";
+    if (isEdit) fd.append("_method", "PATCH");
     const opts = {
-      method: mode === "edit" ? "PATCH" : "POST",
+      method: "POST",
       headers: token ? { Authorization: "Bearer " + token } : {},
       body: fd,
     };
-    let url =
-      mode === "edit"
-        ? apiUrl("/api/v1/products/" + id)
-        : apiUrl("/api/v1/products");
+    let url = isEdit
+      ? apiUrl("/api/v1/products/" + id)
+      : apiUrl("/api/v1/products");
     if (token) {
       url +=
         (url.indexOf("?") === -1 ? "?" : "&") +
@@ -386,10 +387,9 @@
             document.cookie = "api_token=" + tj.token + "; path=/";
             token = tj.token;
             // Rebuild URL with new token
-            url =
-              mode === "edit"
-                ? apiUrl("/api/v1/products/" + id)
-                : apiUrl("/api/v1/products");
+            url = isEdit
+              ? apiUrl("/api/v1/products/" + id)
+              : apiUrl("/api/v1/products");
             url +=
               (url.indexOf("?") === -1 ? "?" : "&") +
               "api_token=" +

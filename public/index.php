@@ -472,6 +472,47 @@ if (str_starts_with($path, '/api/v1')) {
         }
         exit;
     }
+    // Update product via POST override (multipart form supports) _method=PATCH
+    if (preg_match('#^/api/v1/products/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        if (($_POST['_method'] ?? '') !== 'PATCH') {
+            // Not an override; let other handlers (if any) process; else 404 below
+        } else {
+            $u = requireAuth();
+            requireRole($u, ['admin']);
+            $id = (int)$m[1];
+            $data = $_POST;
+            $img = save_upload('image', 'uploads/products');
+            $sets = ['name=:n', 'sku=:s', 'unit_price=:p', 'description=:d'];
+            $params = [
+                ':n' => $data['name'] ?? 'Produit',
+                ':s' => $data['sku'] ?? '',
+                ':p' => (int)($data['unit_price'] ?? 0),
+                ':d' => ($data['description'] ?? null),
+                ':id' => $id
+            ];
+            if ($img) {
+                $sets[] = 'image_path=:img';
+                $params[':img'] = $img;
+            }
+            if (isset($data['active'])) {
+                $sets[] = 'active=:a';
+                $params[':a'] = (int)$data['active'];
+            }
+            $sql = 'UPDATE products SET ' . implode(', ', $sets) . ', updated_at=NOW() WHERE id=:id';
+            DB::execute($sql, $params);
+            // Optional stock in during edit (override)
+            if (!empty($data['initial_quantity'])) {
+                $qty = (int)$data['initial_quantity'];
+                $dep = (int)($data['depot_id'] ?? 0);
+                if ($qty > 0 && $dep > 0) {
+                    (new StockMovement())->move($dep, $id, 'in', $qty, date('Y-m-d H:i:s'), null, 'edit');
+                    Stock::adjust($dep, $id, 'in', $qty);
+                }
+            }
+            echo json_encode(['updated' => true, 'image_path' => $img]);
+            exit;
+        }
+    }
     // Users management (admin)
     if ($path === '/api/v1/users' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $u = requireAuth();
