@@ -89,9 +89,17 @@ input.readonly[readonly] { background:#f4f4f4; color:#555 }
 
 /* --- Select search wrapper --- */
 .select-search { display:flex; flex-direction:column; gap:.4rem }
-.select-search input { padding:.45rem .6rem; border:1px solid #ccc; border-radius:6px }
-.select-search select { width:100%; border:1px solid #ccc; border-radius:6px; padding:.4rem; font-size:.9rem }
+.select-search input { padding:.6rem .75rem; border:1px solid #cfcfcf; border-radius:10px; font-size:1rem; box-shadow:0 1px 2px rgba(0,0,0,.02) }
+.select-search select { width:100%; border:1px solid #cfcfcf; border-radius:10px; padding:.6rem .75rem; font-size:1rem; background:#fff }
 .select-search select option { padding:.25rem .4rem }
+
+/* --- Modern form layout for transfers --- */
+.form-modern { display:flex; flex-direction:column; gap:1rem }
+.form-modern .form-row { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:1rem }
+.form-modern .form-field label { display:block; font-weight:600; color:#333; margin:0 0 .35rem }
+.form-modern .form-control { width:100%; padding:.65rem .8rem; border:1px solid #d8d8d8; border-radius:10px; font-size:1rem; background:#fff; transition:border-color .15s, box-shadow .15s }
+.form-modern .form-control:focus { outline:none; border-color:var(--primary-end); box-shadow:0 0 0 3px rgba(255, 165, 0, .15) }
+.form-modern .form-actions { display:flex; gap:.6rem; align-items:center; justify-content:flex-start; margin-top:.25rem }
 
 /* --- Select combo (single input dropdown) --- */
 .select-combo { position:relative; display:flex; flex-direction:column; gap:.35rem }
@@ -111,7 +119,21 @@ input.readonly[readonly] { background:#f4f4f4; color:#555 }
 .card-product .title, .card-product .card-title { font-weight:700 }
 .card-product .sku { color:#777; font-size:.85rem }
 .card-product .price { color:#111; font-weight:600 }
-.card-product .actions, .card-product .card-actions { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; padding:.7rem 1rem; border-top:1px solid #eee }
+.card-product .actions, .card-product .card-actions { 
+	display:grid; 
+	grid-template-columns: 1fr; 
+	row-gap:.5rem; 
+	align-items:center; 
+	padding:.7rem 1rem; 
+	border-top:1px solid #eee;
+}
+.card-product .actions .left { display:flex; gap:.4rem; flex-wrap:wrap; justify-content:flex-start }
+.card-product .actions .right { display:flex; gap:.4rem; flex-wrap:wrap; justify-content:flex-end }
+
+@media (min-width: 900px){
+	/* Option: sur large écran on peut afficher deux lignes stables, l'une gauche, l'autre droite */
+	.card-product .actions, .card-product .card-actions { grid-template-columns: 1fr }
+}
 .badge-inactive { background:#ffe1e1; color:#b50000; border-radius:999px; padding:.15rem .5rem; font-size:.75rem }
 .muted { color:#777; font-size:.85rem }
 
@@ -126,3 +148,22 @@ input.readonly[readonly] { background:#f4f4f4; color:#555 }
 .toast-error{background:#fdecec; border:1px solid #f5b5b5; color:#7a1f1f}
 .toast-info{background:#eef5ff; border:1px solid #bdd7ff; color:#0b3b82}
 @keyframes slideIn { from { opacity:0; transform:translateY(-8px)} to {opacity:1; transform:translateY(0)} }
+
+/* Popover for stock details */
+.popover { position:absolute; z-index:1500; background:#fff; border:1px solid #e5e5e5; border-radius:10px; box-shadow:0 10px 28px rgba(0,0,0,.12); padding:.6rem .8rem; min-width:220px; max-width:320px }
+.popover h4 { margin:.2rem 0 .4rem; font-size:.95rem }
+.popover .list { display:flex; flex-direction:column; gap:.25rem; max-height:260px; overflow:auto }
+.popover .item { display:flex; justify-content:space-between; gap:.6rem; font-size:.9rem }
+.link { background:none; border:0; padding:0; color:#0b4d88; cursor:pointer; text-decoration:underline; font-weight:600 }
+
+/* --- Client cards --- */
+.card-client { background:#fff; border:1px solid #eee; border-radius:14px; box-shadow:0 6px 18px rgba(0,0,0,.06); overflow:hidden; display:flex; flex-direction:column; transition:transform .15s ease, box-shadow .15s ease }
+.card-client:hover{ transform:translateY(-2px); box-shadow:0 10px 24px rgba(0,0,0,.10) }
+.card-client .cl-header { display:flex; align-items:center; justify-content:center; padding:1rem 1rem .25rem }
+.card-client .avatar { width:84px; height:84px; border-radius:50%; object-fit:cover; box-shadow:0 4px 12px rgba(0,0,0,.12) }
+.card-client .avatar-fallback { width:84px; height:84px; border-radius:50%; background:linear-gradient(135deg, #fafafa 0%, #f2f2f2 100%); display:flex; align-items:center; justify-content:center; color:#888; font-size:36px; box-shadow:0 4px 12px rgba(0,0,0,.12) }
+.card-client .cl-body { padding:.25rem 1rem .75rem; display:flex; flex-direction:column; gap:.25rem; text-align:center }
+.card-client .cl-name { font-weight:800; font-size:1.05rem; color:#222 }
+.card-client .cl-phone { color:#444; font-weight:600; }
+.card-client .cl-actions { padding:.6rem 1rem .9rem; border-top:1px solid #eee; display:flex; gap:.5rem; justify-content:center }
+.card-client .btn[disabled], .card-client .btn[aria-disabled="true"]{ opacity:.5; pointer-events:none }

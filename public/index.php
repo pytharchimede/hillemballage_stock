@@ -472,7 +472,22 @@ if (str_starts_with($path, '/api/v1')) {
     // Products listing
     if ($path === '/api/v1/products' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         requireAuth();
-        $rows = DB::query('SELECT id,name,sku,unit_price,description,image_path,active FROM products ORDER BY id DESC');
+        $rows = DB::query('SELECT p.id,p.name,p.sku,p.unit_price,p.description,p.image_path,p.active, (
+            SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id = p.id
+        ) AS stock_total FROM products p ORDER BY p.id DESC');
+        echo json_encode($rows);
+        exit;
+    }
+    // Stocks by depot for a product
+    if ($path === '/api/v1/stocks' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        requireAuth();
+        $pid = (int)($_GET['product_id'] ?? 0);
+        if ($pid <= 0) {
+            http_response_code(422);
+            echo json_encode(['error' => 'product_id required']);
+            exit;
+        }
+        $rows = DB::query('SELECT s.depot_id, d.name AS depot_name, d.code AS depot_code, s.quantity FROM stocks s JOIN depots d ON d.id = s.depot_id WHERE s.product_id = :p ORDER BY d.name ASC', [':p' => $pid]);
         echo json_encode($rows);
         exit;
     }
@@ -727,6 +742,46 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode(['transferred' => true, 'from' => $from, 'to' => $to, 'product_id' => $pid, 'quantity' => $qty]);
         exit;
     }
+    // Stock transfers history
+    if ($path === '/api/v1/stock/transfers' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        requireAuth();
+        $where = ['t.type = "transfer"'];
+        $params = [];
+        if (!empty($_GET['product_id'])) {
+            $where[] = 't.product_id = :pid';
+            $params[':pid'] = (int)$_GET['product_id'];
+        }
+        if (!empty($_GET['from_depot_id'])) {
+            $where[] = 't.depot_id = :fromd';
+            $params[':fromd'] = (int)$_GET['from_depot_id'];
+        }
+        if (!empty($_GET['to_depot_id'])) {
+            $where[] = 'to_id = :tod';
+            $params[':tod'] = (int)$_GET['to_depot_id'];
+        }
+        if (!empty($_GET['from'])) {
+            $where[] = 't.moved_at >= :fromdte';
+            $params[':fromdte'] = $_GET['from'] . ' 00:00:00';
+        }
+        if (!empty($_GET['to'])) {
+            $where[] = 't.moved_at <= :todte';
+            $params[':todte'] = $_GET['to'] . ' 23:59:59';
+        }
+        $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+        $limit = (int)($_GET['limit'] ?? 200);
+        if ($limit <= 0 || $limit > 1000) $limit = 200;
+        $sql = 'SELECT t.id, t.product_id, p.name AS product_name, t.quantity, t.depot_id AS from_depot_id, df.name AS from_depot_name, df.code AS from_depot_code, '
+            . 'CASE WHEN t.note LIKE "to:%" THEN CAST(SUBSTRING(t.note,4) AS UNSIGNED) ELSE NULL END AS to_depot_id, '
+            . 'dt.name AS to_depot_name, dt.code AS to_depot_code, t.moved_at '
+            . 'FROM stock_movements t '
+            . 'JOIN products p ON p.id = t.product_id '
+            . 'JOIN depots df ON df.id = t.depot_id '
+            . 'LEFT JOIN depots dt ON dt.id = CASE WHEN t.note LIKE "to:%" THEN CAST(SUBSTRING(t.note,4) AS UNSIGNED) ELSE NULL END '
+            . $whereSql . ' ORDER BY t.moved_at DESC LIMIT ' . $limit;
+        $rows = DB::query($sql, $params);
+        echo json_encode($rows);
+        exit;
+    }
     if ($path === '/api/v1/reports/daily') {
         $depotId = (int)($_GET['depot_id'] ?? 1);
         $date = $_GET['date'] ?? date('Y-m-d');
@@ -910,6 +965,14 @@ if ($path === '/orders') {
 if ($path === '/transfers') {
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/transfers.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+
+// Stocks by depot page
+if ($path === '/stocks') {
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/stocks.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }

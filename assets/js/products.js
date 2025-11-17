@@ -74,6 +74,10 @@
           : "";
         const toggleTitle = inactive ? "Activer" : "Désactiver";
         const toggleIcon = inactive ? "fa-toggle-on" : "fa-toggle-off";
+        const stock =
+          typeof p.stock_total !== "undefined"
+            ? `<div class="stock">Stock: <a href="#" class="stock-detail-link" data-pid="${p.id}"><strong>${p.stock_total}</strong></a></div>`
+            : "";
         return `
         <div class="card-product" data-id="${
           p.id
@@ -83,6 +87,7 @@
             <div class="title">${p.name} ${badge}</div>
             <div class="sku">SKU: ${p.sku}</div>
             <div class="price">${p.unit_price} FCFA</div>
+            ${stock}
           </div>
           <div class="actions">
             <div class="left">
@@ -95,8 +100,11 @@
               <a class="btn" title="Modifier" href="${apiUrl(
                 "/products/edit?id=" + p.id
               )}"><i class="fa fa-pencil"></i></a>
+              <button class="btn secondary btn-stock-in" title="Entrée en stock"><i class="fa fa-arrow-down"></i></button>
+              <button class="btn secondary btn-stock-transfer" title="Transférer stock"><i class="fa fa-right-left"></i></button>
             </div>
           </div>
+          <div class="inline-panel" style="display:none; padding:.5rem .75rem; border-top:1px dashed #eee"></div>
         </div>`;
       })
       .join("");
@@ -151,8 +159,120 @@
 
   load();
 
+  // Popover helpers
+  let _currentPopover = null;
+  function closePopover() {
+    if (_currentPopover && _currentPopover.parentNode) {
+      _currentPopover.parentNode.removeChild(_currentPopover);
+    }
+    _currentPopover = null;
+    document.removeEventListener("click", outsideClickHandler, true);
+    window.removeEventListener("scroll", closePopover, true);
+    window.removeEventListener("resize", closePopover, true);
+  }
+  function outsideClickHandler(e) {
+    if (!_currentPopover) return;
+    if (!_currentPopover.contains(e.target)) {
+      closePopover();
+    }
+  }
+  function showPopover(anchorEl, innerHtml) {
+    closePopover();
+    const pop = document.createElement("div");
+    pop.className = "popover";
+    pop.innerHTML = innerHtml;
+    pop.style.position = "absolute";
+    pop.style.zIndex = 1000;
+    document.body.appendChild(pop);
+    const rect = anchorEl.getBoundingClientRect();
+    const top = rect.bottom + window.scrollY + 6;
+    const left = rect.left + window.scrollX;
+    pop.style.top = top + "px";
+    pop.style.left = left + "px";
+    _currentPopover = pop;
+    setTimeout(() => {
+      document.addEventListener("click", outsideClickHandler, true);
+      window.addEventListener("scroll", closePopover, true);
+      window.addEventListener("resize", closePopover, true);
+    }, 0);
+  }
+
+  async function fetchProductStocks(productId) {
+    let token = localStorage.getItem("api_token") || readCookieToken() || "";
+    let url = apiUrl(
+      "/api/v1/stocks?product_id=" + encodeURIComponent(productId)
+    );
+    if (token) url += "&api_token=" + encodeURIComponent(token);
+    let r = await fetch(url, {
+      headers: token ? { Authorization: "Bearer " + token } : {},
+    });
+    if (r.status === 401) {
+      try {
+        const tr = await fetch(apiUrl("/api/v1/auth/session-token"));
+        if (tr.ok) {
+          const tj = await tr.json();
+          if (tj && tj.token) {
+            localStorage.setItem("api_token", tj.token);
+            document.cookie = "api_token=" + tj.token + "; path=/";
+            token = tj.token;
+            url =
+              apiUrl(
+                "/api/v1/stocks?product_id=" + encodeURIComponent(productId)
+              ) +
+              "&api_token=" +
+              encodeURIComponent(token);
+            r = await fetch(url, {
+              headers: { Authorization: "Bearer " + token },
+            });
+          }
+        }
+      } catch (_) {}
+    }
+    if (!r.ok) return [];
+    return await r.json();
+  }
+
   // Toggle activation via event delegation
   document.addEventListener("click", async function (ev) {
+    const stockLink = ev.target.closest(".stock-detail-link");
+    if (stockLink) {
+      ev.preventDefault();
+      const pid = parseInt(stockLink.getAttribute("data-pid"), 10) || 0;
+      if (!pid) return;
+      const rows = await fetchProductStocks(pid);
+      if (!rows || rows.length === 0) {
+        showPopover(
+          stockLink,
+          '<div style="padding:.5rem .75rem;min-width:220px">Aucun stock par dépôt.</div>'
+        );
+        return;
+      }
+      const html =
+        '<div style="padding:.5rem .75rem;min-width:260px">' +
+        '<div style="font-weight:600;margin-bottom:.5rem">Stock par dépôt</div>' +
+        '<div style="max-height:240px;overflow:auto">' +
+        rows
+          .map(function (r) {
+            const name = (r.depot_name || "").replace(/</g, "&lt;");
+            const code = (r.depot_code || "").replace(/</g, "&lt;");
+            return (
+              '<div style="display:flex;justify-content:space-between;gap:.75rem;padding:.25rem 0;border-bottom:1px dashed #eee">' +
+              "<span>" +
+              name +
+              (code ? ' <span style="opacity:.6">(' + code + ")</span>" : "") +
+              "</span>" +
+              '<span style="font-weight:600">' +
+              r.quantity +
+              "</span>" +
+              "</div>"
+            );
+          })
+          .join("") +
+        "</div>" +
+        "</div>";
+      showPopover(stockLink, html);
+      return;
+    }
     const btn = ev.target.closest(".btn-toggle");
     if (!btn) return;
     const card = btn.closest(".card-product");
@@ -203,6 +323,261 @@
     }
     if (r.ok) {
       load();
+    }
+  });
+
+  // Cached depots
+  let _depotsCache = null;
+  async function fetchDepots() {
+    if (_depotsCache) return _depotsCache;
+    let token = localStorage.getItem("api_token") || readCookieToken() || "";
+    let url = apiUrl("/api/v1/depots");
+    if (token) url += "?api_token=" + encodeURIComponent(token);
+    let r = await fetch(url, {
+      headers: token ? { Authorization: "Bearer " + token } : {},
+    });
+    if (r.status === 401) {
+      try {
+        const tr = await fetch(apiUrl("/api/v1/auth/session-token"));
+        if (tr.ok) {
+          const tj = await tr.json();
+          if (tj && tj.token) {
+            localStorage.setItem("api_token", tj.token);
+            document.cookie = "api_token=" + tj.token + "; path=/";
+            token = tj.token;
+            url =
+              apiUrl("/api/v1/depots") +
+              "?api_token=" +
+              encodeURIComponent(token);
+            r = await fetch(url, {
+              headers: { Authorization: "Bearer " + token },
+            });
+          }
+        }
+      } catch (_) {}
+    }
+    if (!r.ok) return [];
+    _depotsCache = await r.json();
+    return _depotsCache;
+  }
+
+  function renderStockInPanel(card, productId) {
+    const panel = card.querySelector(".inline-panel");
+    if (!panel) return;
+    panel.innerHTML =
+      '<div style="display:flex; gap:.5rem; align-items:center; flex-wrap:wrap">' +
+      '<select class="dep-select" style="min-width:180px"></select>' +
+      '<input type="number" class="qty-input" min="1" step="1" placeholder="Quantité" style="width:130px">' +
+      '<button class="btn do-stock-in">Entrer</button>' +
+      '<button class="btn ghost cancel-panel">Annuler</button>' +
+      "</div>";
+    panel.style.display = "block";
+    fetchDepots().then((ds) => {
+      const sel = panel.querySelector(".dep-select");
+      sel.innerHTML = ds
+        .map((d) => `<option value="${d.id}">${d.name} (${d.code})</option>`)
+        .join("");
+    });
+    panel._mode = "in";
+    panel._pid = productId;
+  }
+
+  function renderTransferPanel(card, productId) {
+    const panel = card.querySelector(".inline-panel");
+    if (!panel) return;
+    panel.innerHTML =
+      '<div style="display:flex; gap:.5rem; align-items:center; flex-wrap:wrap">' +
+      '<select class="dep-from" style="min-width:180px"></select>' +
+      '<span style="opacity:.7">→</span>' +
+      '<select class="dep-to" style="min-width:180px"></select>' +
+      '<input type="number" class="qty-input" min="1" step="1" placeholder="Quantité" style="width:130px">' +
+      '<button class="btn do-transfer">Transférer</button>' +
+      '<button class="btn ghost cancel-panel">Annuler</button>' +
+      "</div>";
+    panel.style.display = "block";
+    fetchDepots().then((ds) => {
+      const from = panel.querySelector(".dep-from");
+      const to = panel.querySelector(".dep-to");
+      const opts = ds
+        .map((d) => `<option value="${d.id}">${d.name} (${d.code})</option>`)
+        .join("");
+      from.innerHTML = opts;
+      to.innerHTML = opts;
+    });
+    panel._mode = "transfer";
+    panel._pid = productId;
+  }
+
+  document.addEventListener("click", async function (ev) {
+    const inBtn = ev.target.closest(".btn-stock-in");
+    const tfBtn = ev.target.closest(".btn-stock-transfer");
+    const cancel = ev.target.closest(".cancel-panel");
+    const doIn = ev.target.closest(".do-stock-in");
+    const doTf = ev.target.closest(".do-transfer");
+    const card = ev.target.closest(".card-product");
+    if (!card) return;
+    if (inBtn) {
+      ev.preventDefault();
+      renderStockInPanel(card, parseInt(card.getAttribute("data-id"), 10));
+      return;
+    }
+    if (tfBtn) {
+      ev.preventDefault();
+      renderTransferPanel(card, parseInt(card.getAttribute("data-id"), 10));
+      return;
+    }
+    if (cancel) {
+      ev.preventDefault();
+      const panel = card.querySelector(".inline-panel");
+      if (panel) {
+        panel.style.display = "none";
+        panel.innerHTML = "";
+      }
+      return;
+    }
+    if (doIn) {
+      ev.preventDefault();
+      const panel = card.querySelector(".inline-panel");
+      const sel = panel.querySelector(".dep-select");
+      const qtyEl = panel.querySelector(".qty-input");
+      const depotId = parseInt(sel.value, 10) || 0;
+      const qty = parseInt(qtyEl.value, 10) || 0;
+      const pid = panel._pid;
+      if (!depotId || qty <= 0) {
+        window.showToast &&
+          window.showToast("error", "Choisissez un dépôt et une quantité");
+        return;
+      }
+      let token = localStorage.getItem("api_token") || readCookieToken() || "";
+      let url = apiUrl("/api/v1/stock/movement");
+      if (token) url += "?api_token=" + encodeURIComponent(token);
+      let r = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: "Bearer " + token } : {}),
+        },
+        body: JSON.stringify({
+          depot_id: depotId,
+          product_id: pid,
+          type: "in",
+          quantity: qty,
+        }),
+      });
+      if (r.status === 401) {
+        try {
+          const tr = await fetch(apiUrl("/api/v1/auth/session-token"));
+          if (tr.ok) {
+            const tj = await tr.json();
+            if (tj && tj.token) {
+              localStorage.setItem("api_token", tj.token);
+              document.cookie = "api_token=" + tj.token + "; path=/";
+              token = tj.token;
+              url =
+                apiUrl("/api/v1/stock/movement") +
+                "?api_token=" +
+                encodeURIComponent(token);
+              r = await fetch(url, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: "Bearer " + token,
+                },
+                body: JSON.stringify({
+                  depot_id: depotId,
+                  product_id: pid,
+                  type: "in",
+                  quantity: qty,
+                }),
+              });
+            }
+          }
+        } catch (_) {}
+      }
+      if (!r.ok) {
+        window.showToast &&
+          window.showToast("error", "Entrée en stock échouée");
+        return;
+      }
+      window.showToast &&
+        window.showToast("success", "Entrée en stock enregistrée");
+      panel.style.display = "none";
+      panel.innerHTML = "";
+      load();
+      return;
+    }
+    if (doTf) {
+      ev.preventDefault();
+      const panel = card.querySelector(".inline-panel");
+      const from = parseInt(panel.querySelector(".dep-from").value, 10) || 0;
+      const to = parseInt(panel.querySelector(".dep-to").value, 10) || 0;
+      const qty = parseInt(panel.querySelector(".qty-input").value, 10) || 0;
+      const pid = panel._pid;
+      if (!from || !to || from === to || qty <= 0) {
+        window.showToast &&
+          window.showToast(
+            "error",
+            "Sélectionnez deux dépôts différents et une quantité"
+          );
+        return;
+      }
+      let token = localStorage.getItem("api_token") || readCookieToken() || "";
+      let url = apiUrl("/api/v1/stock/transfer");
+      if (token) url += "?api_token=" + encodeURIComponent(token);
+      let r = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: "Bearer " + token } : {}),
+        },
+        body: JSON.stringify({
+          from_depot_id: from,
+          to_depot_id: to,
+          product_id: pid,
+          quantity: qty,
+        }),
+      });
+      if (r.status === 401) {
+        try {
+          const tr = await fetch(apiUrl("/api/v1/auth/session-token"));
+          if (tr.ok) {
+            const tj = await tr.json();
+            if (tj && tj.token) {
+              localStorage.setItem("api_token", tj.token);
+              document.cookie = "api_token=" + tj.token + "; path=/";
+              token = tj.token;
+              url =
+                apiUrl("/api/v1/stock/transfer") +
+                "?api_token=" +
+                encodeURIComponent(token);
+              r = await fetch(url, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: "Bearer " + token,
+                },
+                body: JSON.stringify({
+                  from_depot_id: from,
+                  to_depot_id: to,
+                  product_id: pid,
+                  quantity: qty,
+                }),
+              });
+            }
+          }
+        } catch (_) {}
+      }
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        const msg = j && j.error ? j.error : "Transfert échoué";
+        window.showToast && window.showToast("error", msg);
+        return;
+      }
+      window.showToast && window.showToast("success", "Transfert effectué");
+      panel.style.display = "none";
+      panel.innerHTML = "";
+      load();
+      return;
     }
   });
 
