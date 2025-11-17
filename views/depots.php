@@ -1,30 +1,23 @@
 <?php
 $scriptDir = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'])), '/');
+$routeBase = $scriptDir;
 $assetBase = preg_replace('#/public$#', '', $scriptDir);
 ?>
-<h1>Dépôts</h1>
+<h1 style="display:flex;justify-content:space-between;align-items:center">
+    <span><i class="fas fa-warehouse"></i> Dépôts</span>
+    <a class="btn" href="<?= $routeBase ?>/depots/new"><i class="fas fa-plus-circle"></i> Nouveau dépôt</a>
+</h1>
+
 <section class="card">
-    <h3>Nouveau dépôt</h3>
-    <form id="depot-form">
-        <div class="form-row">
-            <label>Nom<input type="text" name="name" required></label>
-            <label>Code<input type="text" name="code" required></label>
-        </div>
-        <button class="btn" type="submit">Créer</button>
-    </form>
+    <div style="display:flex; gap:10px; align-items:center; margin-bottom:10px">
+        <input id="depots-search" type="search" placeholder="Rechercher (nom, code, gérant, adresse)" style="flex:1">
+    </div>
+    <div id="depots-empty" style="display:none">Aucun dépôt pour l'instant.</div>
+    <div id="depots-grid" class="cards-grid"></div>
 </section>
-<section class="card">
-    <h3>Liste</h3>
-    <table class="excel" id="depots-table">
-        <thead>
-            <tr>
-                <th>Nom</th>
-                <th>Code</th>
-                <th>Latitude</th>
-                <th>Longitude</th>
-            </tr>
-        </thead>
-        <tbody></tbody>
-    </table>
-</section>
+
+<script>
+    window.ROUTE_BASE = "<?= $routeBase ?>";
+    window.ASSET_BASE = "<?= $assetBase ?>";
+</script>
 <script src="<?= $assetBase ?>/assets/js/depots.js"></script>

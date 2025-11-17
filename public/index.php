@@ -162,8 +162,27 @@ if (str_starts_with($path, '/api/v1')) {
     // Depots listing with geo
     if ($path === '/api/v1/depots' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         requireAuth();
-        $rows = DB::query('SELECT id,name,code,latitude,longitude FROM depots');
+        $q = trim($_GET['q'] ?? '');
+        if ($q !== '') {
+            $like = '%' . $q . '%';
+            $rows = DB::query('SELECT id,name,code,is_main,manager_user_id,manager_name,phone,address,latitude,longitude FROM depots WHERE name LIKE :q OR code LIKE :q OR manager_name LIKE :q OR address LIKE :q ORDER BY id DESC', [':q' => $like]);
+        } else {
+            $rows = DB::query('SELECT id,name,code,is_main,manager_user_id,manager_name,phone,address,latitude,longitude FROM depots ORDER BY id DESC');
+        }
         echo json_encode($rows);
+        exit;
+    }
+    // Get a single depot
+    if (preg_match('#^/api/v1/depots/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        requireAuth();
+        $id = (int)$m[1];
+        $row = DB::query('SELECT id,name,code,is_main,manager_user_id,manager_name,phone,address,latitude,longitude FROM depots WHERE id=:id', [':id' => $id])[0] ?? null;
+        if (!$row) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Not found']);
+            exit;
+        }
+        echo json_encode($row);
         exit;
     }
     // Create depot (admin)
@@ -171,8 +190,51 @@ if (str_starts_with($path, '/api/v1')) {
         $u = requireAuth();
         requireRole($u, ['admin']);
         $data = $_POST ?: (json_decode(file_get_contents('php://input'), true) ?: []);
-        DB::execute('INSERT INTO depots(name,code,created_at) VALUES(:n,:c,NOW())', [':n' => $data['name'] ?? 'Dépôt', ':c' => $data['code'] ?? uniqid('D')]);
-        echo json_encode(['created' => true]);
+        // Validation téléphone
+        if (!empty($data['phone']) && !preg_match('/^[+0-9\s-]{6,}$/', (string)$data['phone'])) {
+            http_response_code(422);
+            echo json_encode(['error' => 'Téléphone invalide (ex: +2250700000000)']);
+            exit;
+        }
+        // Validation unicité code
+        $code = $data['code'] ?? '';
+        if ($code === '') $code = uniqid('D');
+        $exists = DB::query('SELECT id FROM depots WHERE code = :c LIMIT 1', [':c' => $code]);
+        if ($exists) {
+            http_response_code(409);
+            echo json_encode(['error' => 'Code déjà utilisé']);
+            exit;
+        }
+        $managerUserId = isset($data['manager_user_id']) ? (int)$data['manager_user_id'] : null;
+        $managerName = $data['manager_name'] ?? null;
+        if ($managerUserId) {
+            $uRow = DB::query('SELECT id,name FROM users WHERE id=:id', [':id' => $managerUserId])[0] ?? null;
+            if ($uRow) {
+                if (!$managerName) $managerName = $uRow['name'];
+            } else {
+                $managerUserId = null;
+            }
+        }
+        $isMain = !empty($data['is_main']) ? 1 : 0;
+        if ($isMain) {
+            DB::execute('UPDATE depots SET is_main = 0 WHERE is_main = 1');
+        }
+        DB::execute('INSERT INTO depots(name,code,is_main,manager_user_id,manager_name,phone,address,latitude,longitude,created_at) VALUES(:n,:c,:im,:mu,:m,:ph,:ad,:lat,:lng,NOW())', [
+            ':n' => $data['name'] ?? 'Dépôt',
+            ':c' => $code,
+            ':im' => $isMain,
+            ':mu' => $managerUserId,
+            ':m' => $data['manager_name'] ?? null,
+            ':ph' => $data['phone'] ?? null,
+            ':ad' => $data['address'] ?? null,
+            ':lat' => isset($data['latitude']) ? $data['latitude'] : null,
+            ':lng' => isset($data['longitude']) ? $data['longitude'] : null,
+        ]);
+        $id = (int)DB::query('SELECT LAST_INSERT_ID() id')[0]['id'];
+        if ($managerUserId) {
+            DB::execute('UPDATE users SET role = :r, depot_id = :d, updated_at = NOW() WHERE id = :id', [':r' => 'gerant', ':d' => $id, ':id' => $managerUserId]);
+        }
+        echo json_encode(['created' => true, 'id' => $id]);
         exit;
     }
     // Update depot info (admin)
@@ -181,7 +243,53 @@ if (str_starts_with($path, '/api/v1')) {
         requireRole($u, ['admin']);
         $id = (int)$m[1];
         $data = json_decode(file_get_contents('php://input'), true) ?: [];
-        DB::execute('UPDATE depots SET name=:n, code=:c, updated_at=NOW() WHERE id=:id', [':n' => $data['name'] ?? 'Depot', ':c' => $data['code'] ?? '', ':id' => $id]);
+        // Validation téléphone
+        if (!empty($data['phone']) && !preg_match('/^[+0-9\s-]{6,}$/', (string)$data['phone'])) {
+            http_response_code(422);
+            echo json_encode(['error' => 'Téléphone invalide (ex: +2250700000000)']);
+            exit;
+        }
+        // Validation unicité code si changé
+        if (!empty($data['code'])) {
+            $exists = DB::query('SELECT id FROM depots WHERE code = :c AND id <> :id LIMIT 1', [':c' => $data['code'], ':id' => $id]);
+            if ($exists) {
+                http_response_code(409);
+                echo json_encode(['error' => 'Code déjà utilisé']);
+                exit;
+            }
+        }
+        $isMain = isset($data['is_main']) ? (int)!empty($data['is_main']) : null;
+        if ($isMain === 1) {
+            DB::execute('UPDATE depots SET is_main = 0 WHERE is_main = 1');
+        } elseif ($isMain === 0) {
+            // Garde-fou: empêcher qu'il n'y ait plus aucun dépôt principal
+            $current = DB::query('SELECT is_main FROM depots WHERE id=:id', [':id' => $id])[0] ?? null;
+            if ($current && (int)$current['is_main'] === 1) {
+                $others = DB::query('SELECT COUNT(*) c FROM depots WHERE is_main = 1 AND id <> :id', [':id' => $id])[0]['c'] ?? 0;
+                if ((int)$others === 0) {
+                    http_response_code(422);
+                    echo json_encode(['error' => 'Au moins un dépôt principal est requis']);
+                    exit;
+                }
+            }
+        }
+        $sql = 'UPDATE depots SET name=:n, code=:c, manager_name=:m, phone=:ph, address=:ad, latitude=:lat, longitude=:lng';
+        $params = [
+            ':n' => $data['name'] ?? 'Depot',
+            ':c' => $data['code'] ?? '',
+            ':m' => $data['manager_name'] ?? null,
+            ':ph' => $data['phone'] ?? null,
+            ':ad' => $data['address'] ?? null,
+            ':lat' => $data['latitude'] ?? null,
+            ':lng' => $data['longitude'] ?? null,
+            ':id' => $id
+        ];
+        if ($isMain !== null) {
+            $sql .= ', is_main = :im';
+            $params[':im'] = $isMain;
+        }
+        $sql .= ', updated_at=NOW() WHERE id=:id';
+        DB::execute($sql, $params);
         echo json_encode(['updated' => true]);
         exit;
     }
@@ -204,7 +312,7 @@ if (str_starts_with($path, '/api/v1')) {
     // Create client
     if ($path === '/api/v1/clients' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $auth = requireAuth();
-        $data = $_POST ?: (json_decode(file_get_contents('php://input'), true) ?: []);
+        $data = json_decode(file_get_contents('php://input'), true) ?: [];
         $photo = save_upload('photo');
         $cModel = new Client();
         $id = $cModel->insert([
@@ -517,7 +625,12 @@ if (str_starts_with($path, '/api/v1')) {
     if ($path === '/api/v1/users' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $u = requireAuth();
         requireRole($u, ['admin']);
-        $rows = DB::query('SELECT id,name,email,role,depot_id,created_at FROM users ORDER BY id DESC');
+        $role = trim($_GET['role'] ?? '');
+        if ($role !== '') {
+            $rows = DB::query('SELECT id,name,email,role,depot_id,created_at FROM users WHERE role = :r ORDER BY id DESC', [':r' => $role]);
+        } else {
+            $rows = DB::query('SELECT id,name,email,role,depot_id,created_at FROM users ORDER BY id DESC');
+        }
         echo json_encode($rows);
         exit;
     }
@@ -771,6 +884,18 @@ if ($path === '/users') {
 if ($path === '/depots') {
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/depots.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+if ($path === '/depots/new') {
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/depots_new.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+if ($path === '/depots/edit') {
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/depots_edit.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }

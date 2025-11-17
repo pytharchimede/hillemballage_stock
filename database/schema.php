@@ -9,12 +9,17 @@ return [
             'id' => ['type' => 'int', 'unsigned' => true, 'extra' => 'AUTO_INCREMENT'],
             'name' => ['type' => 'varchar', 'length' => 150],
             'code' => ['type' => 'varchar', 'length' => 50],
+            'is_main' => ['type' => 'tinyint', 'unsigned' => true, 'default' => 0],
+            'manager_user_id' => ['type' => 'int', 'unsigned' => true, 'nullable' => true],
+            'manager_name' => ['type' => 'varchar', 'length' => 120, 'nullable' => true],
+            'phone' => ['type' => 'varchar', 'length' => 40, 'nullable' => true],
+            'address' => ['type' => 'varchar', 'length' => 255, 'nullable' => true],
             'latitude' => ['type' => 'decimal', 'length' => '10,7', 'nullable' => true],
             'longitude' => ['type' => 'decimal', 'length' => '10,7', 'nullable' => true],
             'created_at' => ['type' => 'datetime', 'default' => 'CURRENT_TIMESTAMP'],
             'updated_at' => ['type' => 'datetime', 'nullable' => true],
         ],
-        'indexes' => ['PRIMARY KEY (`id`)', 'UNIQUE KEY `depots_code_unique` (`code`)']
+        'indexes' => ['PRIMARY KEY (`id`)', 'UNIQUE KEY `depots_code_unique` (`code`)', 'KEY `depots_manager_fk` (`manager_user_id`)']
     ],
     'users' => [
         'columns' => [

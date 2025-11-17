@@ -35,6 +35,7 @@
             <?php endif; ?>
         </nav>
     </header>
+    <div class="toast-container" aria-live="polite" aria-atomic="true"></div>
     <script>
         (function() {
             var t = document.getElementById('navToggle');
@@ -57,4 +58,5 @@
             } catch (e) {}
         })();
     </script>
+    <script src="<?= $assetBase ?>/assets/js/ui.js"></script>
     <main class="container">

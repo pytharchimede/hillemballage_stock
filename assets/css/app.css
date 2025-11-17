@@ -37,6 +37,12 @@ body{margin:0;font-family:'Segoe UI',system-ui,-apple-system,Segoe UI,Roboto,Ari
 .btn:hover{opacity:.9}
 .btn-danger{background:linear-gradient(135deg,var(--btn-danger-start) 0%, var(--btn-danger-end) 100%);color:#fff}
 .btn-success{background:linear-gradient(135deg,var(--btn-success-start) 0%, var(--btn-success-end) 100%);color:#fff}
+/* Outline main button for depot principal action */
+.btn-outline-main{background:#fff;color:var(--badge-main-color);border:2px solid var(--badge-main-border);border-radius:8px;padding:8px 12px;font-weight:700}
+.btn-outline-main:hover{background:var(--badge-main-bg)}
+/* Ghost button */
+.btn-ghost{background:#fff;border:1px solid #ddd;color:#444;border-radius:8px;padding:8px 12px;font-weight:600}
+.btn-ghost:hover{background:#f7f7f7}
 .login-page{display:flex;align-items:center;justify-content:center;height:100vh;background:linear-gradient(135deg,var(--primary-start) 0%, var(--primary-end) 100%)}
 .login-card{background:#fff;border-radius:16px;padding:28px;box-shadow:0 20px 60px rgba(0,0,0,.18);width:min(420px,92vw)}
 .login-card h1{margin-top:0}
@@ -97,13 +103,26 @@ input.readonly[readonly] { background:#f4f4f4; color:#555 }
 
 /* --- Product cards grid --- */
 .cards-grid { display:grid; grid-template-columns: repeat(auto-fill,minmax(220px,1fr)); gap:1rem }
-.card-product { background:#fff; border:1px solid #eee; border-radius:10px; box-shadow:0 2px 8px rgba(0,0,0,.05); overflow:hidden; display:flex; flex-direction:column }
-.card-product .thumb { aspect-ratio: 4 / 3; background:#fafafa; display:flex; align-items:center; justify-content:center }
+.card-product { background:#fff; border:1px solid #eee; border-radius:12px; box-shadow:0 6px 18px rgba(0,0,0,.06); overflow:hidden; display:flex; flex-direction:column; transition:transform .15s ease, box-shadow .15s ease }
+.card-product:hover{ transform:translateY(-2px); box-shadow:0 10px 24px rgba(0,0,0,.10) }
+.card-product .thumb { aspect-ratio: 16 / 9; background:linear-gradient(135deg, #fafafa 0%, #f2f2f2 100%); display:flex; align-items:center; justify-content:center }
 .card-product .thumb img { max-width:100%; max-height:100%; object-fit:cover }
-.card-product .body { padding:.75rem .9rem; display:flex; flex-direction:column; gap:.35rem }
-.card-product .title { font-weight:600 }
+.card-product .body, .card-product .card-body { padding:.9rem 1rem; display:flex; flex-direction:column; gap:.4rem }
+.card-product .title, .card-product .card-title { font-weight:700 }
 .card-product .sku { color:#777; font-size:.85rem }
 .card-product .price { color:#111; font-weight:600 }
-.card-product .actions { display:flex; justify-content:space-between; align-items:center; padding:.6rem .75rem; border-top:1px solid #eee }
+.card-product .actions, .card-product .card-actions { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; padding:.7rem 1rem; border-top:1px solid #eee }
 .badge-inactive { background:#ffe1e1; color:#b50000; border-radius:999px; padding:.15rem .5rem; font-size:.75rem }
 .muted { color:#777; font-size:.85rem }
+
+/* Highlight main depot */
+.card-product.main-depot{ border:1px solid var(--badge-main-border); box-shadow:0 8px 26px rgba(255, 204, 102, .25) }
+.card-product .badge-main-depot i{ color:var(--badge-main-color) }
+
+/* Toasts */
+.toast-container{position:fixed; top:16px; right:16px; z-index:2000; display:flex; flex-direction:column; gap:8px}
+.toast{min-width:240px; max-width:360px; padding:.75rem .9rem; border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.15); display:flex; align-items:center; gap:.6rem; animation:slideIn .2s ease-out}
+.toast-success{background:#e9f9ee; border:1px solid #bfe7ca; color:#225e35}
+.toast-error{background:#fdecec; border:1px solid #f5b5b5; color:#7a1f1f}
+.toast-info{background:#eef5ff; border:1px solid #bdd7ff; color:#0b3b82}
+@keyframes slideIn { from { opacity:0; transform:translateY(-8px)} to {opacity:1; transform:translateY(0)} }

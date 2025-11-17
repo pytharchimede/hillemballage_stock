@@ -4,6 +4,26 @@ $assetBase = preg_replace('#/public$#', '', $scriptDir);
 ?>
 <h1>Utilisateurs</h1>
 <section class="card">
+    <h3>Droits & Groupes</h3>
+    <p class="muted">Rôles disponibles et leurs permissions par défaut :</p>
+    <ul>
+        <li><strong>Admin</strong> : accès total (utilisateurs, produits, dépôts, stocks, ventes, rapports).</li>
+        <li><strong>Gérant</strong> : gestion de son dépôt (stocks, transferts, commandes, ventes locales).</li>
+        <li><strong>Livreur</strong> : ventes/encaissements, clients et tournée.</li>
+    </ul>
+    <div style="display:flex; gap:.5rem; align-items:center; margin-top:.5rem">
+        <label for="role-filter" class="muted">Filtrer par rôle</label>
+        <select id="role-filter">
+            <option value="">Tous</option>
+            <option value="admin">Admin</option>
+            <option value="gerant">Gérant</option>
+            <option value="livreur">Livreur</option>
+        </select>
+    </div>
+    <small class="muted">Astuce : vous pouvez assigner un dépôt au gérant pour le lier à un site.</small>
+
+</section>
+<section class="card">
     <h3>Nouvel utilisateur</h3>
     <form id="user-form">
         <div class="form-row">
@@ -31,9 +51,13 @@ $assetBase = preg_replace('#/public$#', '', $scriptDir);
                 <th>Email</th>
                 <th>Rôle</th>
                 <th>Dépôt</th>
+                <th>Actions</th>
             </tr>
         </thead>
         <tbody></tbody>
     </table>
 </section>
+<script>
+    window.ROUTE_BASE = "<?= $scriptDir ?>";
+</script>
 <script src="<?= $assetBase ?>/assets/js/users.js"></script>
