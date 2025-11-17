@@ -20,12 +20,12 @@
         <button class="hamburger" id="navToggle" aria-label="menu">☰</button>
         <nav id="mainNav">
             <a href="<?= $routeBase ?>/">Dashboard</a>
+            <a href="<?= $routeBase ?>/depots">Dépôts</a>
             <a href="<?= $routeBase ?>/depots/map">Carte dépôts</a>
             <a href="<?= $routeBase ?>/products">Produits</a>
             <a href="<?= $routeBase ?>/clients">Clients</a>
             <a href="<?= $routeBase ?>/orders">Commandes</a>
             <a href="<?= $routeBase ?>/transfers">Transferts</a>
-            <a href="<?= $routeBase ?>/depots">Dépôts</a>
             <a href="<?= $routeBase ?>/users">Utilisateurs</a>
             <?php if (!empty($_SESSION['user_id'])): ?>
                 <span class="user">👤 <?= htmlspecialchars($_SESSION['user_name'] ?? 'Utilisateur') ?></span>
