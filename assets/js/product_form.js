@@ -4,6 +4,9 @@
   if (!form) return;
   const mode = form.dataset.mode || "create";
   const routeBase = window.ROUTE_BASE || "";
+  function apiUrl(path) {
+    return (routeBase || "") + path;
+  }
   function readCookieToken() {
     try {
       var name = "api_token=";
@@ -132,7 +135,7 @@
     depotSelect.innerHTML = "<option disabled>Chargement…</option>";
     depotSelect.disabled = true;
     const depotsUrl =
-      "/api/v1/depots" +
+      apiUrl("/api/v1/depots") +
       (token ? "?api_token=" + encodeURIComponent(token) : "");
     const r = await fetch(depotsUrl, {
       headers: token ? { Authorization: "Bearer " + token } : {},
@@ -181,7 +184,7 @@
     if (mode === "edit") {
       const id = parseInt(form.dataset.productId || "0", 10);
       if (id) {
-        const r = await fetch("/api/v1/products/" + id, {
+        const r = await fetch(apiUrl("/api/v1/products/" + id), {
           headers: token ? { Authorization: "Bearer " + token } : {},
         });
         if (r.ok) {
@@ -214,7 +217,10 @@
       headers: token ? { Authorization: "Bearer " + token } : {},
       body: fd,
     };
-    const url = mode === "edit" ? "/api/v1/products/" + id : "/api/v1/products";
+    const url =
+      mode === "edit"
+        ? apiUrl("/api/v1/products/" + id)
+        : apiUrl("/api/v1/products");
     const r = await fetch(url, opts);
     if (r.ok) {
       window.location.href = routeBase + "/products";
