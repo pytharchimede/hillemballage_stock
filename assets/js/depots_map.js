@@ -6,6 +6,9 @@
   const canEdit = el.dataset.canEdit === "1";
   let map;
   let layer;
+  let allDepots = [];
+  let filterCenter = null; // {lat, lon}
+  let centerMarker = null;
 
   function readCookieToken() {
     try {
@@ -178,6 +181,25 @@
     } else {
       map.setView([5.35, -4.02], 6);
     }
+    // Show center radius circle if radius filter active
+    const radiusKm = parseFloat(
+      document.getElementById("map-radius")?.value || "0"
+    );
+    if (radiusKm > 0 && filterCenter) {
+      // remove previous center marker and circle layer group if any
+      if (centerMarker) {
+        centerMarker.remove();
+      }
+      centerMarker = L.circle([filterCenter.lat, filterCenter.lon], {
+        radius: radiusKm * 1000,
+        color: "#f2c200",
+        weight: 1,
+        fillOpacity: 0.05,
+      }).addTo(map);
+    } else if (centerMarker) {
+      centerMarker.remove();
+      centerMarker = null;
+    }
   }
 
   async function load() {
@@ -194,7 +216,120 @@
     if (!r.ok) return;
     const data = await r.json();
     if (!Array.isArray(data)) return;
-    renderMarkers(data);
+    allDepots = data;
+    renderMarkers(allDepots);
+    wireFilters();
+  }
+
+  function haversineKm(lat1, lon1, lat2, lon2) {
+    function toRad(v) {
+      return (v * Math.PI) / 180;
+    }
+    const R = 6371;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  }
+
+  function applyFilter() {
+    const qEl = document.getElementById("map-search");
+    const radiusEl = document.getElementById("map-radius");
+    const q = ((qEl && qEl.value) || "").trim().toLowerCase();
+    const radiusKm =
+      parseFloat(radiusEl && radiusEl.value ? radiusEl.value : "0") || 0;
+    let center = filterCenter;
+    if (radiusKm > 0 && !center) {
+      const c = map.getCenter();
+      center = { lat: c.lat, lon: c.lng };
+      filterCenter = center;
+    }
+    const filtered = allDepots.filter((d) => {
+      // Text filter
+      if (q) {
+        const text = [
+          d.name || "",
+          d.code || "",
+          d.manager_name || "",
+          d.address || "",
+        ]
+          .join(" ")
+          .toLowerCase();
+        if (text.indexOf(q) === -1) return false;
+      }
+      // Radius filter
+      if (radiusKm > 0 && center) {
+        if (!d.latitude || !d.longitude) return false;
+        const dist = haversineKm(
+          center.lat,
+          center.lon,
+          parseFloat(d.latitude),
+          parseFloat(d.longitude)
+        );
+        if (dist > radiusKm) return false;
+      }
+      return true;
+    });
+    renderMarkers(filtered);
+    // Toast if none
+    if (filtered.length === 0 && window.showToast) {
+      window.showToast("info", "Aucun dépôt pour ce filtre");
+    }
+  }
+
+  function wireFilters() {
+    const qEl = document.getElementById("map-search");
+    const radiusEl = document.getElementById("map-radius");
+    const geoBtn = document.getElementById("map-geo-btn");
+    const resetBtn = document.getElementById("map-reset-btn");
+    if (qEl && !qEl._wired) {
+      qEl._wired = true;
+      qEl.addEventListener("input", applyFilter);
+    }
+    if (radiusEl && !radiusEl._wired) {
+      radiusEl._wired = true;
+      radiusEl.addEventListener("input", applyFilter);
+    }
+    if (geoBtn && !geoBtn._wired) {
+      geoBtn._wired = true;
+      geoBtn.addEventListener("click", () => {
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              filterCenter = {
+                lat: pos.coords.latitude,
+                lon: pos.coords.longitude,
+              };
+              map.setView([filterCenter.lat, filterCenter.lon], 12);
+              applyFilter();
+              window.showToast &&
+                window.showToast("success", "Centre géolocalisé fixé");
+            },
+            (err) => {
+              window.showToast &&
+                window.showToast("error", "Géolocalisation refusée");
+            },
+            { enableHighAccuracy: true, timeout: 8000 }
+          );
+        } else {
+          window.showToast &&
+            window.showToast("error", "Géolocalisation non supportée");
+        }
+      });
+    }
+    if (resetBtn && !resetBtn._wired) {
+      resetBtn._wired = true;
+      resetBtn.addEventListener("click", () => {
+        filterCenter = null;
+        if (qEl) qEl.value = "";
+        if (radiusEl) radiusEl.value = "0";
+        renderMarkers(allDepots);
+        window.showToast && window.showToast("info", "Filtres réinitialisés");
+      });
+    }
   }
 
   document.addEventListener("DOMContentLoaded", function () {

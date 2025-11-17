@@ -5,6 +5,7 @@ $assetBase = preg_replace('#/public$#', '', $scriptDir);
 ?>
 <h1 style="display:flex;justify-content:space-between;align-items:center">
     <span><i class="fas fa-warehouse"></i> Dépôts</span>
+    <a class="btn" href="<?= $routeBase ?>/depots/map"><i class="fas fa-map-location-dot"></i> Carte</a>
     <a class="btn" href="<?= $routeBase ?>/depots/new"><i class="fas fa-plus-circle"></i> Nouveau dépôt</a>
 </h1>
 
