@@ -22,9 +22,25 @@ function apiUser(): ?array
         $token = trim($m[1]);
     }
     if (!$token && isset($_GET['api_token'])) $token = $_GET['api_token'];
+    // Fallback session: si pas de token mais session web active, retourner l'utilisateur de la session
+    if (!$token && !empty($_SESSION['user_id'])) {
+        $uid = (int)$_SESSION['user_id'];
+        $row = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+        if ($row) return $row;
+        return null;
+    }
     if (!$token) return null;
     $uModel = new User();
-    return $uModel->findByToken($token);
+    $user = $uModel->findByToken($token);
+    if ($user) return $user;
+    // Fallback: support token stocké directement dans users.api_token (jeux de données importés)
+    try {
+        $row = DB::query('SELECT * FROM users WHERE api_token = :t LIMIT 1', [':t' => $token])[0] ?? null;
+        if ($row) return $row;
+    } catch (\Throwable $e) {
+        // ignore
+    }
+    return null;
 }
 
 function parsePermissions(array $u): array
@@ -735,7 +751,7 @@ if (str_starts_with($path, '/api/v1')) {
     // Users management (admin)
     if ($path === '/api/v1/users' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $u = requireAuth();
-        requireRole($u, ['admin']);
+        requirePermission($u, 'users', 'view');
         $role = trim($_GET['role'] ?? '');
         $q = trim($_GET['q'] ?? '');
         $depotId = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
@@ -764,7 +780,7 @@ if (str_starts_with($path, '/api/v1')) {
     }
     if ($path === '/api/v1/users' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $u = requireAuth();
-        requireRole($u, ['admin']);
+        requirePermission($u, 'users', 'edit');
         $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
         $hash = password_hash($data['password'] ?? 'secret123', PASSWORD_BCRYPT);
         $permsJson = isset($data['permissions']) ? json_encode($data['permissions']) : null;
@@ -774,7 +790,7 @@ if (str_starts_with($path, '/api/v1')) {
     }
     if (preg_match('#^/api/v1/users/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $u = requireAuth();
-        requireRole($u, ['admin']);
+        requirePermission($u, 'users', 'view');
         $id = (int)$m[1];
         $row = DB::query('SELECT id,name,email,role,depot_id,permissions,created_at FROM users WHERE id=:id LIMIT 1', [':id' => $id])[0] ?? null;
         if (!$row) {
@@ -787,7 +803,7 @@ if (str_starts_with($path, '/api/v1')) {
     }
     if (preg_match('#^/api/v1/users/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
         $u = requireAuth();
-        requireRole($u, ['admin']);
+        requirePermission($u, 'users', 'edit');
         $id = (int)$m[1];
         $data = json_decode(file_get_contents('php://input'), true) ?: [];
         $sets = ['name=:n', 'email=:e', 'role=:r', 'depot_id=:d'];

@@ -34,6 +34,17 @@
     return token ? { Authorization: "Bearer " + token } : {};
   }
 
+  // Helper d'échappement HTML pour un rendu sûr
+  function escapeHtml(str) {
+    if (str === null || str === undefined) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
   function renderUsers(users) {
     // Cards grid
     const grid = document.getElementById("users-grid");
@@ -77,6 +88,8 @@
 
   async function load() {
     let token = localStorage.getItem("api_token") || readCookieToken() || "";
+    const grid = document.getElementById("users-grid");
+    const empty = document.getElementById("users-empty");
     // Load depots
     let depUrl =
       routeBase +
@@ -85,6 +98,10 @@
     let dr = await fetch(depUrl, { headers: authHeaders(token) });
     if (dr.status === 401) {
       token = (await refreshSessionToken()) || token;
+      depUrl =
+        routeBase +
+        "/api/v1/depots" +
+        (token ? "?api_token=" + encodeURIComponent(token) : "");
       dr = await fetch(depUrl, { headers: authHeaders(token) });
     }
     if (dr.ok) {
@@ -126,9 +143,31 @@
     let r = await fetch(url, { headers: authHeaders(token) });
     if (r.status === 401) {
       token = (await refreshSessionToken()) || token;
+      baseUsersUrl =
+        routeBase +
+        "/api/v1/users" +
+        (params.toString() ? "?" + params.toString() : "");
+      url =
+        baseUsersUrl +
+        (baseUsersUrl.indexOf("?") > -1 ? "&" : "?") +
+        (token ? "api_token=" + encodeURIComponent(token) : "");
       r = await fetch(url, { headers: authHeaders(token) });
     }
-    if (!r.ok) return;
+    if (!r.ok) {
+      if (grid) grid.innerHTML = "";
+      if (empty) {
+        try {
+          const err = await r.json();
+          empty.textContent = `Erreur ${r.status}: ${
+            err.error || "Impossible de charger la liste"
+          }`;
+        } catch (_) {
+          empty.textContent = `Erreur ${r.status}: Impossible de charger la liste`;
+        }
+        empty.style.display = "block";
+      }
+      return;
+    }
     const users = await r.json();
     renderUsers(users);
   }
