@@ -69,22 +69,51 @@
         const roleBadge = `<span class="badge">${escapeHtml(
           u.role || ""
         )}</span>`;
+        const inactive = u.active === 0;
+        const activeBadge = inactive
+          ? '<span class="badge danger">Inactif</span>'
+          : '<span class="badge success">Actif</span>';
+        const photo = u.photo_path
+          ? `<div class="avatar" style="background-image:url('${escapeHtml(
+              u.photo_path
+            )}');"></div>`
+          : `<div class="avatar avatar-fallback"><i class="fa fa-user"></i></div>`;
         return `
         <div class="card-client" data-id="${u.id}">
-          <div class="cl-header"><div class="avatar avatar-fallback"><i class="fa fa-user"></i></div></div>
+          <div class="cl-header">${photo}</div>
           <div class="cl-body">
             <div class="cl-name">${escapeHtml(u.name || "")}</div>
             <div class="cl-phone"><i class="fa fa-envelope"></i> ${escapeHtml(
               u.email || ""
             )}</div>
-            <div class="cl-balance">${roleBadge} · ${dlabel}</div>
+            <div class="cl-balance">${roleBadge} · ${dlabel} · ${activeBadge}</div>
           </div>
           <div class="cl-actions">
             <a class="btn" href="${routeBase}/users/edit?id=${u.id}" title="Modifier"><i class="fa fa-pencil"></i></a>
+            <a class="btn" href="${routeBase}/users/export?id=${u.id}" title="Exporter PDF"><i class="fa fa-id-card"></i></a>
+            ${
+              inactive
+                ? `<button class="btn activate-btn" data-id="${u.id}" title="Activer"><i class="fa fa-toggle-on"></i></button>`
+                : `<button class="btn deactivate-btn" data-id="${u.id}" title="Désactiver"><i class="fa fa-toggle-off"></i></button>`
+            }
           </div>
         </div>`;
       })
       .join("");
+    // Bind désactivation / activation
+    grid.querySelectorAll(".deactivate-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = parseInt(btn.getAttribute("data-id"), 10);
+        if (!confirm("Désactiver cet utilisateur ?")) return;
+        toggleActive(id, false);
+      });
+    });
+    grid.querySelectorAll(".activate-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = parseInt(btn.getAttribute("data-id"), 10);
+        toggleActive(id, true);
+      });
+    });
   }
 
   async function load() {
@@ -137,6 +166,8 @@
     if (role) params.set("role", role);
     if (q) params.set("q", q);
     if (dep) params.set("depot_id", dep);
+    const active = document.getElementById("active-filter")?.value || "";
+    if (active !== "") params.set("active", active);
     let baseUsersUrl =
       routeBase +
       "/api/v1/users" +
@@ -195,10 +226,40 @@
       if (qf) qf.value = "";
       if (rf) rf.value = "";
       if (df) df.value = "";
+      const af = document.getElementById("active-filter");
+      if (af) af.value = "";
       load();
     });
+  const af = document.getElementById("active-filter");
+  if (af) af.addEventListener("change", load);
 
   // Inline save supprimé (édition via /users/edit)
 
   load();
+
+  async function toggleActive(id, active) {
+    let token = localStorage.getItem("api_token") || readCookieToken() || "";
+    let url =
+      routeBase +
+      "/api/v1/users/" +
+      id +
+      (active ? "/activate" : "/deactivate");
+    if (token) url += "?api_token=" + encodeURIComponent(token);
+    let r = await fetch(url, { method: "PATCH", headers: authHeaders(token) });
+    if (r.status === 401) {
+      token = (await refreshSessionToken()) || token;
+      url =
+        routeBase +
+        "/api/v1/users/" +
+        id +
+        (active ? "/activate" : "/deactivate");
+      if (token) url += "?api_token=" + encodeURIComponent(token);
+      r = await fetch(url, { method: "PATCH", headers: authHeaders(token) });
+    }
+    if (!r.ok) {
+      alert("Erreur changement statut");
+      return;
+    }
+    load();
+  }
 })();

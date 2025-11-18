@@ -764,13 +764,31 @@ if (str_starts_with($path, '/api/v1')) {
             exit;
         }
     }
-    // Users management (admin)
+    // Users management (admin) + runtime colonne photo_path & active
     if ($path === '/api/v1/users' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $u = requireAuth();
         requirePermission($u, 'users', 'view');
+        // Assurer colonnes supplémentaires
+        try {
+            $cols = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="users"');
+            $havePhoto = false;
+            $haveActive = false;
+            foreach ($cols as $c) {
+                if ($c['COLUMN_NAME'] === 'photo_path') $havePhoto = true;
+                if ($c['COLUMN_NAME'] === 'active') $haveActive = true;
+            }
+            if (!$havePhoto) {
+                DB::execute('ALTER TABLE users ADD COLUMN photo_path VARCHAR(255) NULL AFTER permissions');
+            }
+            if (!$haveActive) {
+                DB::execute('ALTER TABLE users ADD COLUMN active TINYINT UNSIGNED NOT NULL DEFAULT 1 AFTER photo_path');
+            }
+        } catch (\Throwable $e) { /* ignore */
+        }
         $role = trim($_GET['role'] ?? '');
         $q = trim($_GET['q'] ?? '');
         $depotId = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
+        $activeFilter = isset($_GET['active']) && $_GET['active'] !== '' ? ($_GET['active'] === '0' ? 0 : 1) : null;
         $where = [];
         $params = [];
         if ($role !== '') {
@@ -785,7 +803,11 @@ if (str_starts_with($path, '/api/v1')) {
             $where[] = '(name LIKE :q OR email LIKE :q)';
             $params[':q'] = '%' . $q . '%';
         }
-        $sql = 'SELECT id,name,email,role,depot_id,permissions,created_at FROM users';
+        if ($activeFilter !== null) {
+            $where[] = 'active = :ac';
+            $params[':ac'] = $activeFilter;
+        }
+        $sql = 'SELECT id,name,email,role,depot_id,permissions,photo_path,active,created_at FROM users';
         if ($where) {
             $sql .= ' WHERE ' . implode(' AND ', $where);
         }
@@ -797,18 +819,71 @@ if (str_starts_with($path, '/api/v1')) {
     if ($path === '/api/v1/users' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $u = requireAuth();
         requirePermission($u, 'users', 'edit');
+        // Colonnes garanties
+        try {
+            $cols = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="users"');
+            $havePhoto = false;
+            $haveActive = false;
+            foreach ($cols as $c) {
+                if ($c['COLUMN_NAME'] === 'photo_path') $havePhoto = true;
+                if ($c['COLUMN_NAME'] === 'active') $haveActive = true;
+            }
+            if (!$havePhoto) {
+                DB::execute('ALTER TABLE users ADD COLUMN photo_path VARCHAR(255) NULL AFTER permissions');
+            }
+            if (!$haveActive) {
+                DB::execute('ALTER TABLE users ADD COLUMN active TINYINT UNSIGNED NOT NULL DEFAULT 1 AFTER photo_path');
+            }
+        } catch (\Throwable $e) { /* ignore */
+        }
         $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
+        // Validation email
+        if (empty($data['email']) || !filter_var($data['email'], FILTER_VALIDATE_EMAIL)) {
+            http_response_code(422);
+            echo json_encode(['error' => 'Email invalide']);
+            exit;
+        }
+        // Unicité email
+        $exists = DB::query('SELECT id FROM users WHERE email=:e LIMIT 1', [':e' => $data['email']]);
+        if ($exists) {
+            http_response_code(409);
+            echo json_encode(['error' => 'Email déjà utilisé']);
+            exit;
+        }
         $hash = password_hash($data['password'] ?? 'secret123', PASSWORD_BCRYPT);
         $permsJson = isset($data['permissions']) ? json_encode($data['permissions']) : null;
-        DB::execute('INSERT INTO users(name,email,password_hash,role,depot_id,permissions,created_at) VALUES(:n,:e,:h,:r,:d,:p,NOW())', [':n' => $data['name'] ?? 'User', ':e' => $data['email'] ?? '', ':h' => $hash, ':r' => $data['role'] ?? 'gerant', ':d' => (int)($data['depot_id'] ?? 1), ':p' => $permsJson]);
-        echo json_encode(['created' => true]);
+        $photo = null;
+        if (!empty($_FILES['photo'])) {
+            $up = save_upload('photo', 'uploads');
+            if ($up) $photo = $up;
+        }
+        DB::execute('INSERT INTO users(name,email,password_hash,role,depot_id,permissions,photo_path,active,created_at) VALUES(:n,:e,:h,:r,:d,:p,:ph,1,NOW())', [':n' => $data['name'] ?? 'User', ':e' => $data['email'] ?? '', ':h' => $hash, ':r' => $data['role'] ?? 'gerant', ':d' => (int)($data['depot_id'] ?? 1), ':p' => $permsJson, ':ph' => $photo]);
+        $newId = (int)DB::query('SELECT LAST_INSERT_ID() id')[0]['id'];
+        echo json_encode(['created' => true, 'id' => $newId, 'photo_path' => $photo]);
         exit;
     }
     if (preg_match('#^/api/v1/users/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $u = requireAuth();
         requirePermission($u, 'users', 'view');
         $id = (int)$m[1];
-        $row = DB::query('SELECT id,name,email,role,depot_id,permissions,created_at FROM users WHERE id=:id LIMIT 1', [':id' => $id])[0] ?? null;
+        // Colonnes runtime
+        try {
+            $cols = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="users"');
+            $havePhoto = false;
+            $haveActive = false;
+            foreach ($cols as $c) {
+                if ($c['COLUMN_NAME'] === 'photo_path') $havePhoto = true;
+                if ($c['COLUMN_NAME'] === 'active') $haveActive = true;
+            }
+            if (!$havePhoto) {
+                DB::execute('ALTER TABLE users ADD COLUMN photo_path VARCHAR(255) NULL AFTER permissions');
+            }
+            if (!$haveActive) {
+                DB::execute('ALTER TABLE users ADD COLUMN active TINYINT UNSIGNED NOT NULL DEFAULT 1 AFTER photo_path');
+            }
+        } catch (\Throwable $e) { /* ignore */
+        }
+        $row = DB::query('SELECT id,name,email,role,depot_id,permissions,photo_path,active,created_at FROM users WHERE id=:id LIMIT 1', [':id' => $id])[0] ?? null;
         if (!$row) {
             http_response_code(404);
             echo json_encode(['error' => 'Not found']);
@@ -822,6 +897,20 @@ if (str_starts_with($path, '/api/v1')) {
         requirePermission($u, 'users', 'edit');
         $id = (int)$m[1];
         $data = json_decode(file_get_contents('php://input'), true) ?: [];
+        // Email validation/unicité si changé
+        if (isset($data['email'])) {
+            if (!filter_var($data['email'], FILTER_VALIDATE_EMAIL)) {
+                http_response_code(422);
+                echo json_encode(['error' => 'Email invalide']);
+                exit;
+            }
+            $dup = DB::query('SELECT id FROM users WHERE email=:e AND id<>:id LIMIT 1', [':e' => $data['email'], ':id' => $id]);
+            if ($dup) {
+                http_response_code(409);
+                echo json_encode(['error' => 'Email déjà utilisé']);
+                exit;
+            }
+        }
         $sets = ['name=:n', 'email=:e', 'role=:r', 'depot_id=:d'];
         $params = [':n' => $data['name'] ?? null, ':e' => $data['email'] ?? null, ':r' => $data['role'] ?? null, ':d' => (int)($data['depot_id'] ?? 0), ':id' => $id];
         if (array_key_exists('permissions', $data)) {
@@ -832,8 +921,60 @@ if (str_starts_with($path, '/api/v1')) {
             $sets[] = 'password_hash=:h';
             $params[':h'] = password_hash($data['password'], PASSWORD_BCRYPT);
         }
+        if (array_key_exists('active', $data)) {
+            $sets[] = 'active=:ac';
+            $params[':ac'] = !empty($data['active']) ? 1 : 0;
+        }
+        // Photo upload (support multipart PATCH via form-data hors spec fetch JSON) - si fichier présent
+        if (!empty($_FILES['photo'])) {
+            $up = save_upload('photo', 'uploads');
+            if ($up) {
+                $sets[] = 'photo_path=:ph';
+                $params[':ph'] = $up;
+            }
+        }
         DB::execute('UPDATE users SET ' . implode(',', $sets) . ', updated_at=NOW() WHERE id=:id', $params);
         echo json_encode(['updated' => true]);
+        exit;
+    }
+    // Secure password reset (admin only) returns temporary password
+    if (preg_match('#^/api/v1/users/(\d+)/reset-password$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $u = requireAuth();
+        requireRole($u, ['admin']); // seulement admin
+        $id = (int)$m[1];
+        $row = DB::query('SELECT id FROM users WHERE id=:id LIMIT 1', [':id' => $id])[0] ?? null;
+        if (!$row) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Not found']);
+            exit;
+        }
+        // Génération mot de passe fort
+        $alphabet = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789@$!%*?&';
+        $pw = '';
+        for ($i = 0; $i < 12; $i++) {
+            $pw .= $alphabet[random_int(0, strlen($alphabet) - 1)];
+        }
+        $hash = password_hash($pw, PASSWORD_BCRYPT);
+        DB::execute('UPDATE users SET password_hash=:h, updated_at=NOW() WHERE id=:id', [':h' => $hash, ':id' => $id]);
+        echo json_encode(['reset' => true, 'password' => $pw]);
+        exit;
+    }
+    // Désactivation utilisateur rapide
+    if (preg_match('#^/api/v1/users/(\d+)/deactivate$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
+        $u = requireAuth();
+        requirePermission($u, 'users', 'edit');
+        $id = (int)$m[1];
+        DB::execute('UPDATE users SET active=0, updated_at=NOW() WHERE id=:id', [':id' => $id]);
+        echo json_encode(['deactivated' => true]);
+        exit;
+    }
+    // Réactivation (optionnel)
+    if (preg_match('#^/api/v1/users/(\d+)/activate$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
+        $u = requireAuth();
+        requirePermission($u, 'users', 'edit');
+        $id = (int)$m[1];
+        DB::execute('UPDATE users SET active=1, updated_at=NOW() WHERE id=:id', [':id' => $id]);
+        echo json_encode(['activated' => true]);
         exit;
     }
     // Orders (commandes, réception direct + stock IN)
@@ -1426,6 +1567,125 @@ if ($path === '/orders/export') {
     $html .= '</tbody></table><br /><h3>Total: ' . (int)$ord['total_amount'] . '</h3>';
     $pdf->writeHTML($html, true, false, true, false, '');
     $pdf->Output('bon_' . $ord['reference'] . '.pdf', 'I');
+    exit;
+}
+// User card export (ID pro)
+if ($path === '/users/export') {
+    $id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+    if ($id <= 0) {
+        http_response_code(422);
+        echo 'ID manquant';
+        exit;
+    }
+    // Assurer colonnes
+    try {
+        $cols = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="users"');
+        $havePhoto = false;
+        $haveActive = false;
+        foreach ($cols as $c) {
+            if ($c['COLUMN_NAME'] === 'photo_path') $havePhoto = true;
+            if ($c['COLUMN_NAME'] === 'active') $haveActive = true;
+        }
+        if (!$havePhoto) DB::execute('ALTER TABLE users ADD COLUMN photo_path VARCHAR(255) NULL AFTER permissions');
+        if (!$haveActive) DB::execute('ALTER TABLE users ADD COLUMN active TINYINT UNSIGNED NOT NULL DEFAULT 1 AFTER photo_path');
+    } catch (\Throwable $e) {
+    }
+    $usr = DB::query('SELECT id,name,email,role,depot_id,photo_path,active,created_at FROM users WHERE id=:id LIMIT 1', [":id" => $id])[0] ?? null;
+    if (!$usr) {
+        http_response_code(404);
+        echo 'Utilisateur introuvable';
+        exit;
+    }
+    $dep = null;
+    if (!empty($usr['depot_id'])) {
+        $dep = DB::query('SELECT id,name,code FROM depots WHERE id=:d', [":d" => (int)$usr['depot_id']])[0] ?? null;
+    }
+    if (!class_exists('TCPDF')) {
+        try {
+            @include_once __DIR__ . '/../vendor/tecnickcom/tcpdf/tcpdf.php';
+        } catch (\Throwable $e) {
+        }
+    }
+    if (!class_exists('TCPDF')) {
+        http_response_code(500);
+        echo 'TCPDF non installé.';
+        exit;
+    }
+    $pdf = new TCPDF('P', 'mm', 'A4');
+    $pdf->SetCreator('Hill Stock');
+    $pdf->SetAuthor('Hill Stock');
+    $pdf->SetTitle('Fiche utilisateur');
+    $pdf->AddPage();
+    $html = '<style>
+    .card-id{border:2px solid #222;border-radius:14px;padding:16px;font-family:helvetica;max-width:380px;box-shadow:0 3px 8px rgba(0,0,0,.15);}
+    .cid-header{display:flex;align-items:center;gap:12px;margin-bottom:10px;}
+    .cid-photo{width:90px;height:110px;object-fit:cover;border:1px solid #555;border-radius:6px;background:#eee;}
+    .cid-title{font-size:16px;font-weight:bold;letter-spacing:.7px;text-transform:uppercase;}
+    .cid-row{margin:3px 0;font-size:11px;}
+    .cid-label{color:#555;font-weight:bold;}
+    .cid-badge{display:inline-block;padding:3px 8px;border-radius:12px;background:#0d6efd;color:#fff;font-size:10px;}
+    .cid-inactive{background:#b02a37 !important;}
+    .cid-footer{margin-top:10px;font-size:9px;color:#777;}
+    .cid-topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
+    .cid-logo{height:32px;}
+    </style>';
+    // Logo si présent (public/assets/img/logo.png)
+    $logoPathFS = __DIR__ . '/assets/img/logo.png';
+    $logoTag = is_file($logoPathFS) ? '<img class="cid-logo" src="/assets/img/logo.png" />' : '<div style="font-size:12px;font-weight:bold">HILL STOCK</div>';
+    $photo = $usr['photo_path'] ?? '';
+    $photoTag = '';
+    if ($photo && preg_match('#^/#', $photo)) {
+        $fs = __DIR__ . $photo; // photo path relative to public
+        if (is_file($fs)) {
+            // embed as image file
+            $pdf->Image($fs, 20, 40, 30, 37, '', '', '', true); // also place separately for print quality
+            $photoTag = '<img class="cid-photo" src="' . htmlspecialchars($photo) . '" />';
+        } else {
+            $photoTag = '<div class="cid-photo"></div>';
+        }
+    } else {
+        $photoTag = '<div class="cid-photo"></div>';
+    }
+    $badgeClass = 'cid-badge' . ((int)$usr['active'] === 1 ? '' : ' cid-inactive');
+    $activeLabel = (int)$usr['active'] === 1 ? 'ACTIF' : 'INACTIF';
+    $html .= '<div class="card-id">'
+        . '<div class="cid-topbar">' . $logoTag . '<div style="font-size:10px;color:#666">ID: ' . htmlspecialchars((string)$usr['id']) . '</div></div>'
+        . '<div class="cid-header">' . $photoTag . '<div><div class="cid-title">IDENTIFICATION UTILISATEUR</div><div class="cid-row"><span class="' . $badgeClass . '">' . $activeLabel . '</span></div></div></div>'
+        . '<div class="cid-header">' . $photoTag . '<div><div class="cid-title">IDENTIFICATION UTILISATEUR</div><div class="cid-row"><span class="' . $badgeClass . '">' . $activeLabel . '</span></div></div></div>'
+        . '<div class="cid-row"><span class="cid-label">Nom:</span> ' . htmlspecialchars($usr['name'] ?? '') . '</div>'
+        . '<div class="cid-row"><span class="cid-label">Email/Login:</span> ' . htmlspecialchars($usr['email'] ?? '') . '</div>'
+        . '<div class="cid-row"><span class="cid-label">Rôle:</span> ' . htmlspecialchars($usr['role'] ?? '') . '</div>'
+        . '<div class="cid-row"><span class="cid-label">Dépôt:</span> ' . htmlspecialchars($dep ? ($dep['name'] . ($dep['code'] ? ' (' . $dep['code'] . ')' : '')) : 'N/A') . '</div>'
+        . '<div class="cid-row"><span class="cid-label">Créé le:</span> ' . htmlspecialchars(substr((string)$usr['created_at'], 0, 19)) . '</div>'
+        . '<div class="cid-row"><span class="cid-label">Mot de passe:</span> (non récupérable, réinitialisation requise)</div>'
+        . '<div class="cid-footer">Document généré automatiquement - Confidentialité requise.</div>'
+        . '</div>';
+    $pdf->writeHTML($html);
+    // QR code simplifié HTML (sans librairie) basé sur hash
+    $qrData = 'HILLUSER:' . $usr['id'] . ';' . ($usr['email'] ?? '') . ';' . ($usr['role'] ?? '');
+    $hash = md5($qrData); // 32 hex -> utiliser pour motif
+    $size = 21;
+    $bitSeq = '';
+    // Expand hash pour remplir grille size*size (441 bits) en répétant
+    while (strlen($bitSeq) < $size * $size) {
+        foreach (str_split($hash) as $ch) {
+            $bitSeq .= (hexdec($ch) % 2) ? '1' : '0';
+            if (strlen($bitSeq) >= $size * $size) break;
+        }
+    }
+    $html .= '<div style="margin-top:12px"><table cellspacing="0" cellpadding="0" style="border:1px solid #333">';
+    $idx = 0;
+    for ($y = 0; $y < $size; $y++) {
+        $html .= '<tr>';
+        for ($x = 0; $x < $size; $x++) {
+            $b = $bitSeq[$idx++] === '1';
+            $html .= '<td style="width:3mm;height:3mm;background:' . ($b ? '#000' : '#fff') . '"></td>';
+        }
+        $html .= '</tr>';
+    }
+    $html .= '</table><div style="font-size:7px;color:#666;text-align:center">QR simplifié</div></div>';
+    $pdf->writeHTML($html);
+    $pdf->Output('fiche_utilisateur_' . $id . '.pdf', 'I');
     exit;
 }
 
