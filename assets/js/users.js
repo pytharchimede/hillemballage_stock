@@ -2,6 +2,7 @@
   const routeBase = window.ROUTE_BASE || "";
   let stateDepots = [];
   let debounceT;
+  let depotsPopulated = false;
 
   function readCookieToken() {
     try {
@@ -90,38 +91,42 @@
     let token = localStorage.getItem("api_token") || readCookieToken() || "";
     const grid = document.getElementById("users-grid");
     const empty = document.getElementById("users-empty");
-    // Load depots
-    let depUrl =
-      routeBase +
-      "/api/v1/depots" +
-      (token ? "?api_token=" + encodeURIComponent(token) : "");
-    let dr = await fetch(depUrl, { headers: authHeaders(token) });
-    if (dr.status === 401) {
-      token = (await refreshSessionToken()) || token;
-      depUrl =
+    // Load depots once and populate filter without resetting current selection
+    const depotFilter = document.getElementById("depot-filter");
+    if (!depotsPopulated) {
+      let depUrl =
         routeBase +
         "/api/v1/depots" +
         (token ? "?api_token=" + encodeURIComponent(token) : "");
-      dr = await fetch(depUrl, { headers: authHeaders(token) });
-    }
-    if (dr.ok) {
-      stateDepots = await dr.json();
-    } else {
-      stateDepots = [];
-    }
-    // Populate depot filter
-    const depotFilter = document.getElementById("depot-filter");
-    if (depotFilter) {
-      depotFilter.innerHTML =
-        '<option value="">Tous</option>' +
-        stateDepots
-          .map(
-            (d) =>
-              `<option value="${d.id}">${d.name}${
-                d.code ? " (" + d.code + ")" : ""
-              }</option>`
-          )
-          .join("");
+      let dr = await fetch(depUrl, { headers: authHeaders(token) });
+      if (dr.status === 401) {
+        token = (await refreshSessionToken()) || token;
+        depUrl =
+          routeBase +
+          "/api/v1/depots" +
+          (token ? "?api_token=" + encodeURIComponent(token) : "");
+        dr = await fetch(depUrl, { headers: authHeaders(token) });
+      }
+      if (dr.ok) {
+        stateDepots = await dr.json();
+      } else {
+        stateDepots = [];
+      }
+      if (depotFilter) {
+        const selected = depotFilter.value || "";
+        depotFilter.innerHTML =
+          '<option value="">Tous</option>' +
+          stateDepots
+            .map(
+              (d) =>
+                `<option value="${d.id}">${d.name}${
+                  d.code ? " (" + d.code + ")" : ""
+                }</option>`
+            )
+            .join("");
+        if (selected) depotFilter.value = selected;
+      }
+      depotsPopulated = true;
     }
 
     // Load users with filters
