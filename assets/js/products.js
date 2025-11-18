@@ -1,5 +1,6 @@
 (function () {
   const routeBase = window.ROUTE_BASE || "";
+  let _me = null;
 
   // Fonction API globale corrigée
   function apiUrl(path) {
@@ -26,6 +27,28 @@
   }
 
   async function load() {
+    if (!_me) {
+      try {
+        const rme = await fetch(apiUrl("/api/v1/auth/me"));
+        if (rme.ok) _me = await rme.json();
+      } catch (e) {}
+    }
+    const perms = (_me && _me.permissions) || {};
+    const role = (_me && _me.role) || "";
+    // Masquer les actions top selon permissions/role
+    try {
+      const newBtn = document.getElementById("btn-new-product");
+      if (newBtn) {
+        const ok =
+          (perms["*"] && perms["*"].edit) ||
+          (perms.products && perms.products.edit);
+        newBtn.style.display = ok ? "inline-block" : "none";
+      }
+      const fixBtn = document.getElementById("fix-img-btn");
+      if (fixBtn && fixBtn.getAttribute("data-role") === "admin-only") {
+        fixBtn.style.display = role === "admin" ? "inline-block" : "none";
+      }
+    } catch (_) {}
     let token = localStorage.getItem("api_token") || readCookieToken() || "";
     let url = apiUrl("/api/v1/products");
     if (token) url += "?api_token=" + encodeURIComponent(token);
@@ -62,6 +85,14 @@
       return;
     }
     if (empty) empty.style.display = "none";
+    const canEditProducts =
+      (perms["*"] && perms["*"].edit) ||
+      (perms.products && perms.products.edit);
+    const canEditStocks =
+      (perms["*"] && perms["*"].edit) || (perms.stocks && perms.stocks.edit);
+    const canTransfer =
+      (perms["*"] && perms["*"].edit) ||
+      (perms.transfers && perms.transfers.edit);
     const cards = data
       .map(function (p) {
         const img = p.image_path
@@ -74,9 +105,13 @@
           : "";
         const toggleTitle = inactive ? "Activer" : "Désactiver";
         const toggleIcon = inactive ? "fa-toggle-on" : "fa-toggle-off";
+        const stockVal =
+          typeof p.stock_depot !== "undefined" && p.stock_depot !== null
+            ? p.stock_depot
+            : p.stock_total;
         const stock =
-          typeof p.stock_total !== "undefined"
-            ? `<div class="stock">Stock: <a href="#" class="stock-detail-link" data-pid="${p.id}"><strong>${p.stock_total}</strong></a></div>`
+          typeof stockVal !== "undefined"
+            ? `<div class="stock">Stock: <a href="#" class="stock-detail-link" data-pid="${p.id}"><strong>${stockVal}</strong></a></div>`
             : "";
         return `
         <div class="card-product" data-id="${
@@ -96,12 +131,28 @@
               )}"><i class="fa fa-eye"></i></a>
             </div>
             <div class="right" style="display:flex;gap:.4rem">
-              <button class="btn tertiary btn-toggle" title="${toggleTitle}"><i class="fa ${toggleIcon}"></i></button>
-              <a class="btn" title="Modifier" href="${apiUrl(
-                "/products/edit?id=" + p.id
-              )}"><i class="fa fa-pencil"></i></a>
-              <button class="btn secondary btn-stock-in" title="Entrée en stock"><i class="fa fa-arrow-down"></i></button>
-              <button class="btn secondary btn-stock-transfer" title="Transférer stock"><i class="fa fa-right-left"></i></button>
+              ${
+                canEditProducts
+                  ? `<button class="btn tertiary btn-toggle" title="${toggleTitle}"><i class="fa ${toggleIcon}"></i></button>`
+                  : ""
+              }
+              ${
+                canEditProducts
+                  ? `<a class="btn" title="Modifier" href="${apiUrl(
+                      "/products/edit?id=" + p.id
+                    )}"><i class="fa fa-pencil"></i></a>`
+                  : ""
+              }
+              ${
+                canEditStocks
+                  ? `<button class="btn secondary btn-stock-in" title="Entrée en stock"><i class="fa fa-arrow-down"></i></button>`
+                  : ""
+              }
+              ${
+                canTransfer
+                  ? `<button class="btn secondary btn-stock-transfer" title="Transférer stock"><i class="fa fa-right-left"></i></button>`
+                  : ""
+              }
             </div>
           </div>
           <div class="inline-panel" style="display:none; padding:.5rem .75rem; border-top:1px dashed #eee"></div>

@@ -74,10 +74,12 @@
       if (!r.ok) throw new Error("depots");
       const rows = await r.json();
       elDepot.innerHTML = "";
-      const all = document.createElement("option");
-      all.value = "";
-      all.textContent = "Tous les dépôts";
-      elDepot.appendChild(all);
+      if (Array.isArray(rows) && rows.length > 1) {
+        const all = document.createElement("option");
+        all.value = "";
+        all.textContent = "Tous les dépôts";
+        elDepot.appendChild(all);
+      }
       rows.forEach((d) => {
         const o = document.createElement("option");
         o.value = d.id;

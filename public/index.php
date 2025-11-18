@@ -58,7 +58,8 @@ function parsePermissions(array $u): array
     $perms = [];
     if (!empty($u['permissions'])) {
         try {
-            $perms = json_decode((string)$u['permissions'], true) ?: [];
+            $decoded = json_decode((string)$u['permissions'], true);
+            $perms = is_array($decoded) ? $decoded : [];
         } catch (\Throwable $e) {
             $perms = [];
         }
@@ -87,13 +88,17 @@ function parsePermissions(array $u): array
             'sales' => ['view' => true, 'edit' => true, 'delete' => false],
             'users' => ['view' => false, 'edit' => false, 'delete' => false],
             'reports' => ['view' => false, 'edit' => false, 'delete' => false],
+            'seller_rounds' => ['view' => false, 'edit' => false, 'delete' => false],
         ],
     ];
-    // Merge defaults
+    // Merge defaults en normalisant les structures malformées
     if (isset($defaults[$role])) {
         foreach ($defaults[$role] as $ent => $acts) {
-            if (!isset($perms[$ent])) $perms[$ent] = $acts;
-            else $perms[$ent] = array_merge($acts, $perms[$ent]);
+            if (!isset($perms[$ent]) || !is_array($perms[$ent])) {
+                $perms[$ent] = $acts;
+            } else {
+                $perms[$ent] = array_merge($acts, $perms[$ent]);
+            }
         }
     }
     return $perms;
@@ -103,8 +108,8 @@ function can(array $u, string $entity, string $action): bool
 {
     if (($u['role'] ?? '') === 'admin') return true;
     $perms = parsePermissions($u);
-    if (isset($perms['*'][$action]) && $perms['*'][$action]) return true;
-    return !empty($perms[$entity][$action]);
+    if (isset($perms['*']) && is_array($perms['*']) && !empty($perms['*'][$action])) return true;
+    return (isset($perms[$entity]) && is_array($perms[$entity]) && !empty($perms[$entity][$action]));
 }
 
 function requirePermission(array $u, string $entity, string $action)
@@ -175,6 +180,23 @@ function ensure_permissions_table(): void
 }
 ensure_permissions_table();
 
+// Assurer la colonne depot_id sur clients pour le scoping par dépôt
+function ensure_clients_depot_column(): void
+{
+    try {
+        $col = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="clients" AND COLUMN_NAME="depot_id"');
+        if (!$col) {
+            DB::execute('ALTER TABLE clients ADD COLUMN depot_id INT UNSIGNED NULL AFTER address');
+            // Index léger
+            try {
+                DB::execute('CREATE INDEX clients_depot_fk ON clients(depot_id)');
+            } catch (\Throwable $e) { /* ignore */
+            }
+        }
+    } catch (\Throwable $e) { /* ignore */
+    }
+}
+
 function loadExplicitPermissions(int $uid): array
 {
     try {
@@ -213,7 +235,7 @@ function mergeRoleDefaults(string $role, array $explicit): array
             'finance_stock' => ['view' => true],
             'sales' => ['view' => true, 'edit' => true],
             'clients' => ['view' => true, 'edit' => true],
-            'seller_rounds' => ['view' => true, 'edit' => true],
+            'seller_rounds' => ['view' => false, 'edit' => false],
             'products' => ['view' => true],
         ],
     ];
@@ -453,6 +475,35 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode(['normalized' => $normalized, 'base' => $base]);
         exit;
     }
+    // Admin: migrer les clients sans depot_id vers un dépôt par défaut
+    if ($path === '/api/v1/admin/clients/migrate-depot' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $u = requireAuth();
+        requireRole($u, ['admin']);
+        ensure_clients_depot_column();
+        $payload = json_decode(file_get_contents('php://input'), true) ?: $_POST ?: [];
+        $targetDepotId = isset($payload['depot_id']) ? (int)$payload['depot_id'] : 0;
+        if ($targetDepotId <= 0) {
+            // Chercher le dépôt principal sinon le plus ancien
+            $main = DB::query('SELECT id FROM depots WHERE is_main = 1 ORDER BY id ASC LIMIT 1')[0]['id'] ?? null;
+            if ($main) $targetDepotId = (int)$main;
+            if ($targetDepotId <= 0) {
+                $any = DB::query('SELECT id FROM depots ORDER BY id ASC LIMIT 1')[0]['id'] ?? null;
+                if ($any) $targetDepotId = (int)$any;
+            }
+        }
+        if ($targetDepotId <= 0) {
+            http_response_code(422);
+            echo json_encode(['error' => 'Aucun dépôt disponible. Créez un dépôt ou fournissez depot_id.']);
+            exit;
+        }
+        $toMigrate = (int)(DB::query('SELECT COUNT(*) c FROM clients WHERE depot_id IS NULL OR depot_id = 0')[0]['c'] ?? 0);
+        if ($toMigrate > 0) {
+            DB::execute('UPDATE clients SET depot_id = :dep, updated_at = NOW() WHERE depot_id IS NULL OR depot_id = 0', [':dep' => $targetDepotId]);
+        }
+        $remaining = (int)(DB::query('SELECT COUNT(*) c FROM clients WHERE depot_id IS NULL OR depot_id = 0')[0]['c'] ?? 0);
+        echo json_encode(['target_depot_id' => $targetDepotId, 'migrated' => $toMigrate - $remaining, 'remaining' => $remaining]);
+        exit;
+    }
     // Auth login -> token
     if ($path === '/api/v1/auth/login' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
@@ -481,21 +532,39 @@ if (str_starts_with($path, '/api/v1')) {
     }
     // Depots listing with geo
     if ($path === '/api/v1/depots' && $_SERVER['REQUEST_METHOD'] === 'GET') {
-        requireAuth();
+        $auth = requireAuth();
+        $role = (string)($auth['role'] ?? '');
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
         $q = trim($_GET['q'] ?? '');
-        if ($q !== '') {
-            $like = '%' . $q . '%';
-            $rows = DB::query('SELECT id,name,code,is_main,manager_user_id,manager_name,phone,address,latitude,longitude FROM depots WHERE name LIKE :q OR code LIKE :q OR manager_name LIKE :q OR address LIKE :q ORDER BY id DESC', [':q' => $like]);
+        if ($role === 'admin') {
+            if ($q !== '') {
+                $like = '%' . $q . '%';
+                $rows = DB::query('SELECT id,name,code,is_main,manager_user_id,manager_name,phone,address,latitude,longitude FROM depots WHERE name LIKE :q OR code LIKE :q OR manager_name LIKE :q OR address LIKE :q ORDER BY id DESC', [':q' => $like]);
+            } else {
+                $rows = DB::query('SELECT id,name,code,is_main,manager_user_id,manager_name,phone,address,latitude,longitude FROM depots ORDER BY id DESC');
+            }
         } else {
-            $rows = DB::query('SELECT id,name,code,is_main,manager_user_id,manager_name,phone,address,latitude,longitude FROM depots ORDER BY id DESC');
+            // Gerant/Livreur: n'accéder qu'à leur dépôt
+            if ($userDepotId <= 0) {
+                echo json_encode([]);
+                exit;
+            }
+            $rows = DB::query('SELECT id,name,code,is_main,manager_user_id,manager_name,phone,address,latitude,longitude FROM depots WHERE id = :id', [':id' => $userDepotId]);
         }
         echo json_encode($rows);
         exit;
     }
     // Get a single depot
     if (preg_match('#^/api/v1/depots/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
-        requireAuth();
+        $auth = requireAuth();
         $id = (int)$m[1];
+        $role = (string)($auth['role'] ?? '');
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
+        if ($role !== 'admin' && $id !== $userDepotId) {
+            http_response_code(403);
+            echo json_encode(['error' => 'Forbidden']);
+            exit;
+        }
         $row = DB::query('SELECT id,name,code,is_main,manager_user_id,manager_name,phone,address,latitude,longitude FROM depots WHERE id=:id', [':id' => $id])[0] ?? null;
         if (!$row) {
             http_response_code(404);
@@ -607,27 +676,64 @@ if (str_starts_with($path, '/api/v1')) {
     }
     // Depots geo update
     if (preg_match('#^/api/v1/depots/(\d+)/geo$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
-        requireAuth();
+        $auth = requireAuth();
+        requirePermission($auth, 'depots', 'edit');
         $id = (int)$m[1];
+        $role = (string)($auth['role'] ?? '');
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
+        if ($role !== 'admin' && $id !== $userDepotId) {
+            http_response_code(403);
+            echo json_encode(['error' => 'Forbidden']);
+            exit;
+        }
         $data = json_decode(file_get_contents('php://input'), true) ?: [];
         DB::execute('UPDATE depots SET latitude=:lat, longitude=:lng, updated_at=NOW() WHERE id=:id', [':lat' => $data['latitude'], ':lng' => $data['longitude'], ':id' => $id]);
         echo json_encode(['updated' => true]);
         exit;
     }
-    // Clients listing (with balance)
+    // Clients listing (with balance) - scoped by role/depot
     if ($path === '/api/v1/clients' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $u = requireAuth();
         requirePermission($u, 'clients', 'view');
-        $rows = DB::query('SELECT c.id,c.name,c.phone,c.address,c.latitude,c.longitude,c.photo_path,c.created_at,
+        ensure_clients_depot_column();
+        $role = (string)($u['role'] ?? '');
+        $userDepotId = (int)($u['depot_id'] ?? 0);
+        $q = trim($_GET['q'] ?? '');
+        $depId = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
+        $where = [];
+        $params = [];
+        if ($q !== '') {
+            $where[] = '(c.name LIKE :q OR c.phone LIKE :q)';
+            $params[':q'] = '%' . $q . '%';
+        }
+        if ($role === 'admin') {
+            if ($depId !== null) {
+                $where[] = 'c.depot_id = :dep';
+                $params[':dep'] = $depId;
+            }
+        } else {
+            // Non-admin: restreindre au dépôt de l'utilisateur
+            if ($userDepotId <= 0) {
+                echo json_encode([]);
+                exit;
+            }
+            $where[] = 'c.depot_id = :dep';
+            $params[':dep'] = $userDepotId;
+        }
+        $sql = 'SELECT c.id,c.name,c.phone,c.address,c.latitude,c.longitude,c.photo_path,c.created_at, c.depot_id,
             (SELECT COALESCE(SUM(s.total_amount) - SUM(s.amount_paid), 0) FROM sales s WHERE s.client_id = c.id) AS balance
-            FROM clients c ORDER BY c.id DESC');
+            FROM clients c';
+        if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
+        $sql .= ' ORDER BY c.id DESC';
+        $rows = DB::query($sql, $params);
         echo json_encode($rows);
         exit;
     }
-    // Create client (supports JSON and multipart)
+    // Create client (supports JSON and multipart) - auto-assign depot for non-admin
     if ($path === '/api/v1/clients' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $auth = requireAuth();
         requirePermission($auth, 'clients', 'edit');
+        ensure_clients_depot_column();
         $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
         $data = [];
         if (stripos($contentType, 'application/json') !== false) {
@@ -637,10 +743,24 @@ if (str_starts_with($path, '/api/v1')) {
         }
         $photo = save_upload('photo');
         $cModel = new Client();
+        $role = (string)($auth['role'] ?? '');
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
+        $targetDepotId = null;
+        if ($role === 'admin') {
+            $targetDepotId = isset($data['depot_id']) ? (int)$data['depot_id'] : null;
+        } else {
+            if ($userDepotId <= 0) {
+                http_response_code(422);
+                echo json_encode(['error' => 'Aucun dépôt associé à l’utilisateur']);
+                exit;
+            }
+            $targetDepotId = $userDepotId;
+        }
         $id = $cModel->insert([
             'name' => $data['name'] ?? 'Client',
             'phone' => $data['phone'] ?? null,
             'address' => $data['address'] ?? null,
+            'depot_id' => $targetDepotId,
             'latitude' => isset($data['latitude']) ? $data['latitude'] : null,
             'longitude' => isset($data['longitude']) ? $data['longitude'] : null,
             'photo_path' => $photo,
@@ -649,11 +769,22 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode(['id' => $id, 'photo_path' => $photo]);
         exit;
     }
-    // Update client basic info / photo
+    // Update client basic info / photo - scoped by depot for non-admin
     if (preg_match('#^/api/v1/clients/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
         $auth = requireAuth();
         requirePermission($auth, 'clients', 'edit');
+        ensure_clients_depot_column();
         $id = (int)$m[1];
+        $role = (string)($auth['role'] ?? '');
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
+        if ($role !== 'admin') {
+            $cli = DB::query('SELECT depot_id FROM clients WHERE id=:id', [':id' => $id])[0] ?? null;
+            if (!$cli || $userDepotId <= 0 || (int)$cli['depot_id'] !== $userDepotId) {
+                http_response_code(403);
+                echo json_encode(['error' => 'Forbidden']);
+                exit;
+            }
+        }
         // Support JSON or multipart (photo)
         $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
         if (stripos($contentType, 'application/json') !== false) {
@@ -675,12 +806,15 @@ if (str_starts_with($path, '/api/v1')) {
         }
         exit;
     }
-    // Get single client (with balance)
+    // Get single client (with balance) - scoped by depot for non-admin
     if (preg_match('#^/api/v1/clients/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $u = requireAuth();
         requirePermission($u, 'clients', 'view');
+        ensure_clients_depot_column();
+        $role = (string)($u['role'] ?? '');
+        $userDepotId = (int)($u['depot_id'] ?? 0);
         $id = (int)$m[1];
-        $row = DB::query('SELECT c.id,c.name,c.phone,c.address,c.latitude,c.longitude,c.photo_path,c.created_at,
+        $row = DB::query('SELECT c.id,c.name,c.phone,c.address,c.latitude,c.longitude,c.photo_path,c.created_at,c.depot_id,
                 (SELECT COALESCE(SUM(s.total_amount) - SUM(s.amount_paid), 0) FROM sales s WHERE s.client_id = c.id) AS balance
             FROM clients c WHERE c.id = :id LIMIT 1', [':id' => $id])[0] ?? null;
         if (!$row) {
@@ -688,14 +822,32 @@ if (str_starts_with($path, '/api/v1')) {
             echo json_encode(['error' => 'Not found']);
             exit;
         }
+        if ($role !== 'admin') {
+            if ($userDepotId <= 0 || (int)$row['depot_id'] !== $userDepotId) {
+                http_response_code(403);
+                echo json_encode(['error' => 'Forbidden']);
+                exit;
+            }
+        }
         echo json_encode($row);
         exit;
     }
-    // Update client geo
+    // Update client geo - scoped by depot for non-admin
     if (preg_match('#^/api/v1/clients/(\d+)/geo$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
         $auth = requireAuth();
         requirePermission($auth, 'clients', 'edit');
+        ensure_clients_depot_column();
+        $role = (string)($auth['role'] ?? '');
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
         $id = (int)$m[1];
+        if ($role !== 'admin') {
+            $cli = DB::query('SELECT depot_id FROM clients WHERE id=:id', [':id' => $id])[0] ?? null;
+            if (!$cli || $userDepotId <= 0 || (int)$cli['depot_id'] !== $userDepotId) {
+                http_response_code(403);
+                echo json_encode(['error' => 'Forbidden']);
+                exit;
+            }
+        }
         $data = json_decode(file_get_contents('php://input'), true) ?: [];
         DB::execute('UPDATE clients SET latitude=:lat, longitude=:lng, updated_at=NOW() WHERE id=:id', [':lat' => $data['latitude'], ':lng' => $data['longitude'], ':id' => $id]);
         echo json_encode(['updated' => true]);
@@ -704,11 +856,31 @@ if (str_starts_with($path, '/api/v1')) {
     // Stock movement
     if ($path === '/api/v1/stock/movement' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $auth = requireAuth();
+        requirePermission($auth, 'stocks', 'edit');
+        $role = (string)($auth['role'] ?? '');
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
         $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
         foreach (['depot_id', 'product_id', 'type', 'quantity'] as $f) if (!isset($data[$f])) {
             http_response_code(422);
             echo json_encode(['error' => "Missing $f"]);
             exit;
+        }
+        // Restriction de dépôt pour non-admin
+        if ($role !== 'admin') {
+            if ($role === 'gerant') {
+                if ($userDepotId <= 0 || (int)$data['depot_id'] !== $userDepotId) {
+                    http_response_code(403);
+                    echo json_encode(['error' => 'Forbidden depot']);
+                    exit;
+                }
+            } else {
+                // livreur/others: interdit si hors dépôt
+                if ($userDepotId <= 0 || (int)$data['depot_id'] !== $userDepotId) {
+                    http_response_code(403);
+                    echo json_encode(['error' => 'Forbidden depot']);
+                    exit;
+                }
+            }
         }
         $sm = new StockMovement();
         $sm->move((int)$data['depot_id'], (int)$data['product_id'], $data['type'], (int)$data['quantity']);
@@ -719,6 +891,8 @@ if (str_starts_with($path, '/api/v1')) {
     // Create sale with items + optional payment (with strict stock validation)
     if ($path === '/api/v1/sales' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $auth = requireAuth();
+        $role = (string)($auth['role'] ?? '');
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
         $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
         $items = $data['items'] ?? [];
         if (!$items) {
@@ -728,6 +902,28 @@ if (str_starts_with($path, '/api/v1')) {
         }
         // Validate stock availability for each line
         $depotId = (int)$data['depot_id'];
+        // Restriction de dépôt pour non-admin
+        if ($role !== 'admin') {
+            if ($userDepotId <= 0 || $depotId !== $userDepotId) {
+                http_response_code(403);
+                echo json_encode(['error' => 'Forbidden depot']);
+                exit;
+            }
+            // Vérifier que le client appartient au même dépôt
+            try {
+                ensure_clients_depot_column();
+                $cli = DB::query('SELECT depot_id FROM clients WHERE id = :id', [':id' => (int)($data['client_id'] ?? 0)])[0] ?? null;
+                if (!$cli || (int)$cli['depot_id'] !== $depotId) {
+                    http_response_code(403);
+                    echo json_encode(['error' => 'Client hors dépôt']);
+                    exit;
+                }
+            } catch (\Throwable $e) {
+                http_response_code(422);
+                echo json_encode(['error' => 'Client invalide']);
+                exit;
+            }
+        }
         foreach ($items as $it) {
             $pid = (int)$it['product_id'];
             $qty = (int)$it['quantity'];
@@ -833,10 +1029,20 @@ if (str_starts_with($path, '/api/v1')) {
     }
     // Products listing (optional q search, optional depot-specific stock)
     if ($path === '/api/v1/products' && $_SERVER['REQUEST_METHOD'] === 'GET') {
-        requireAuth();
+        $auth = requireAuth();
+        $role = (string)($auth['role'] ?? '');
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
         $q = trim($_GET['q'] ?? '');
         $depId = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
+        if ($role !== 'admin' && $role !== 'gerant') {
+            // Forcer le dépôt à celui de l'utilisateur (livreur/other)
+            $depId = $userDepotId ?: null;
+        }
         $onlyInStock = isset($_GET['only_in_stock']) && $_GET['only_in_stock'] !== '' ? ($_GET['only_in_stock'] === '1') : false;
+        if ($role !== 'admin' && $role !== 'gerant') {
+            // Livreur/other: ne renvoyer que les produits disponibles dans son dépôt
+            $onlyInStock = true;
+        }
         $params = [];
         if ($depId !== null) {
             $params[':dep'] = $depId;
@@ -872,14 +1078,20 @@ if (str_starts_with($path, '/api/v1')) {
     }
     // Stocks by depot for a product
     if ($path === '/api/v1/stocks' && $_SERVER['REQUEST_METHOD'] === 'GET') {
-        requireAuth();
+        $auth = requireAuth();
+        $role = (string)($auth['role'] ?? '');
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
         $pid = (int)($_GET['product_id'] ?? 0);
         if ($pid <= 0) {
             http_response_code(422);
             echo json_encode(['error' => 'product_id required']);
             exit;
         }
-        $rows = DB::query('SELECT s.depot_id, d.name AS depot_name, d.code AS depot_code, s.quantity FROM stocks s JOIN depots d ON d.id = s.depot_id WHERE s.product_id = :p ORDER BY d.name ASC', [':p' => $pid]);
+        if ($role === 'admin') {
+            $rows = DB::query('SELECT s.depot_id, d.name AS depot_name, d.code AS depot_code, s.quantity FROM stocks s JOIN depots d ON d.id = s.depot_id WHERE s.product_id = :p ORDER BY d.name ASC', [':p' => $pid]);
+        } else {
+            $rows = DB::query('SELECT s.depot_id, d.name AS depot_name, d.code AS depot_code, s.quantity FROM stocks s JOIN depots d ON d.id = s.depot_id WHERE s.product_id = :p AND s.depot_id = :dep ORDER BY d.name ASC', [':p' => $pid, ':dep' => $userDepotId]);
+        }
         echo json_encode($rows);
         exit;
     }
@@ -1962,6 +2174,16 @@ if (str_starts_with($path, '/api/v1')) {
         } elseif ($role === 'gerant' && $userDepotId > 0) {
             $stockWhere[] = 's.depot_id = :dep';
             $stockParams[':dep'] = $userDepotId;
+        } else {
+            // livreur & autres: forcer au dépôt utilisateur
+            if ($userDepotId > 0) {
+                $stockWhere[] = 's.depot_id = :dep';
+                $stockParams[':dep'] = $userDepotId;
+            } else {
+                // aucun dépôt rattaché: renvoyer vide
+                echo json_encode(['by_depot' => [], 'stock_totals' => ['qty' => 0, 'valuation' => 0], 'client_balances' => [], 'receivables_total' => 0, 'filters' => ['depot_id' => null, 'from' => $from, 'to' => $to]]);
+                exit;
+            }
         }
         $stockScopeSql = $stockWhere ? (' WHERE ' . implode(' AND ', $stockWhere)) : '';
         // Stock by depot
@@ -1981,6 +2203,14 @@ if (str_starts_with($path, '/api/v1')) {
         } elseif ($role === 'gerant' && $userDepotId > 0) {
             $salesWhere[] = 's.depot_id = :sdep';
             $salesParams[':sdep'] = $userDepotId;
+        } else {
+            if ($userDepotId > 0) {
+                $salesWhere[] = 's.depot_id = :sdep';
+                $salesParams[':sdep'] = $userDepotId;
+            } else {
+                echo json_encode(['by_depot' => [], 'stock_totals' => ['qty' => 0, 'valuation' => 0], 'client_balances' => [], 'receivables_total' => 0, 'filters' => ['depot_id' => null, 'from' => $from, 'to' => $to]]);
+                exit;
+            }
         }
         if ($from !== '') {
             $salesWhere[] = 's.sold_at >= :fromd';
@@ -2035,6 +2265,13 @@ if (str_starts_with($path, '/api/v1')) {
         } elseif ($role === 'gerant' && $userDepotId > 0) {
             $stockWhere[] = 's.depot_id = :dep';
             $stockParams[':dep'] = $userDepotId;
+        } else {
+            if ($userDepotId > 0) {
+                $stockWhere[] = 's.depot_id = :dep';
+                $stockParams[':dep'] = $userDepotId;
+            } else {
+                $stockWhere[] = '1=0';
+            }
         }
         $stockScopeSql = $stockWhere ? (' WHERE ' . implode(' AND ', $stockWhere)) : '';
         $byDepot = DB::query('SELECT s.depot_id, d.name AS depot_name, COALESCE(SUM(s.quantity),0) qty, COALESCE(SUM(s.quantity * p.cost_price),0) valuation '
@@ -2052,6 +2289,13 @@ if (str_starts_with($path, '/api/v1')) {
         } elseif ($role === 'gerant' && $userDepotId > 0) {
             $salesWhere[] = 's.depot_id = :sdep';
             $salesParams[':sdep'] = $userDepotId;
+        } else {
+            if ($userDepotId > 0) {
+                $salesWhere[] = 's.depot_id = :sdep';
+                $salesParams[':sdep'] = $userDepotId;
+            } else {
+                $salesWhere[] = '1=0';
+            }
         }
         if ($from !== '') {
             $salesWhere[] = 's.sold_at >= :fromd';
@@ -2129,6 +2373,13 @@ if (str_starts_with($path, '/api/v1')) {
         } elseif ($role === 'gerant' && $userDepotId > 0) {
             $stockWhere[] = 's.depot_id = :dep';
             $stockParams[':dep'] = $userDepotId;
+        } else {
+            if ($userDepotId > 0) {
+                $stockWhere[] = 's.depot_id = :dep';
+                $stockParams[':dep'] = $userDepotId;
+            } else {
+                $stockWhere[] = '1=0';
+            }
         }
         $stockScopeSql = $stockWhere ? (' WHERE ' . implode(' AND ', $stockWhere)) : '';
         $byDepot = DB::query('SELECT s.depot_id, d.name AS depot_name, COALESCE(SUM(s.quantity),0) qty, COALESCE(SUM(s.quantity * p.cost_price),0) valuation '
@@ -2145,6 +2396,13 @@ if (str_starts_with($path, '/api/v1')) {
         } elseif ($role === 'gerant' && $userDepotId > 0) {
             $salesWhere[] = 's.depot_id = :sdep';
             $salesParams[':sdep'] = $userDepotId;
+        } else {
+            if ($userDepotId > 0) {
+                $salesWhere[] = 's.depot_id = :sdep';
+                $salesParams[':sdep'] = $userDepotId;
+            } else {
+                $salesWhere[] = '1=0';
+            }
         }
         if ($from !== '') {
             $salesWhere[] = 's.sold_at >= :fromd';
@@ -3239,6 +3497,17 @@ if ($path === '/products') {
     exit;
 }
 if ($path === '/products/new') {
+    if (empty($_SESSION['user_id'])) {
+        header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
+        exit;
+    }
+    $uid = (int)$_SESSION['user_id'];
+    $u = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+    if (!$u || !userCan($u, 'products', 'edit')) {
+        http_response_code(403);
+        echo 'Accès refusé';
+        exit;
+    }
     try {
         if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'products_new', null, $path, 'GET');
     } catch (\Throwable $e) {
@@ -3249,6 +3518,17 @@ if ($path === '/products/new') {
     exit;
 }
 if ($path === '/products/edit') {
+    if (empty($_SESSION['user_id'])) {
+        header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
+        exit;
+    }
+    $uid = (int)$_SESSION['user_id'];
+    $u = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+    if (!$u || !userCan($u, 'products', 'edit')) {
+        http_response_code(403);
+        echo 'Accès refusé';
+        exit;
+    }
     try {
         if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'products_edit', null, $path, 'GET');
     } catch (\Throwable $e) {
