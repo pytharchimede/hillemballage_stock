@@ -18,12 +18,30 @@
   const elCart = document.getElementById("sq-cart");
   const elTotal = document.getElementById("sq-total");
   const elSubmit = document.getElementById("sq-submit");
-  const elClient = document.getElementById("sq-client");
+  const elClientOpen = document.getElementById("sq-client-open");
+  const elClientSelected = document.getElementById("sq-client-selected");
   const elPaid = document.getElementById("sq-paid");
   const elCashAll = document.getElementById("sq-cash-all");
 
   let products = [];
   let cart = [];
+  let selectedClient = null; // {id, name, phone}
+
+  function renderSelectedClient() {
+    if (!elClientSelected) return;
+    if (selectedClient && selectedClient.id) {
+      const label = `${selectedClient.name || "Client"}${
+        selectedClient.id ? " (#" + selectedClient.id + ")" : ""
+      }${selectedClient.phone ? " • " + selectedClient.phone : ""}`;
+      elClientSelected.textContent = label;
+      elClientSelected.classList.remove("muted");
+      elClientSelected.style.fontWeight = "600";
+    } else {
+      elClientSelected.textContent = "Aucun client sélectionné";
+      elClientSelected.classList.add("muted");
+      elClientSelected.style.fontWeight = "";
+    }
+  }
 
   function formatAmount(v) {
     return String(v || 0);
@@ -215,12 +233,16 @@
         window.showToast && window.showToast("error", "Panier vide");
         return;
       }
+      if (!selectedClient || !selectedClient.id) {
+        window.showToast &&
+          window.showToast("error", "Sélectionner ou créer un client");
+        return;
+      }
       const total = computeTotal();
       const paid = parseInt(elPaid.value, 10) || 0;
-      const clientId = parseInt(elClient.value, 10) || 0;
       const body = {
         depot_id: depotId,
-        client_id: clientId,
+        client_id: selectedClient.id,
         items: cart.map((it) => ({
           product_id: it.product_id,
           quantity: it.quantity,
@@ -254,7 +276,142 @@
     });
   }
 
+  // --- Client picker / creator modal ---
+  async function fetchClients() {
+    try {
+      const r = await fetch(BASE + "/api/v1/clients", {
+        headers: authHeaders(),
+      });
+      if (!r.ok) return [];
+      return (await r.json()) || [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function openClientModal() {
+    const dlg = document.createElement("div");
+    dlg.className = "modal";
+    dlg.innerHTML = `<div class="modal-content">
+      <h3>Client</h3>
+      <div class="grid-2" style="gap:12px">
+        <div>
+          <div class="muted" style="margin-bottom:6px">Client existant</div>
+          <input type="text" id="cl-search" class="form-control compact" placeholder="Rechercher nom/téléphone" />
+          <div id="cl-list" style="margin-top:8px; max-height:320px; overflow:auto">Chargement...</div>
+        </div>
+        <div>
+          <div class="muted" style="margin-bottom:6px">Nouveau client</div>
+          <label class="muted">Nom</label>
+          <input type="text" id="cl-new-name" class="form-control compact" placeholder="Ex: Koffi" />
+          <label class="muted" style="margin-top:6px">Téléphone</label>
+          <input type="text" id="cl-new-phone" class="form-control compact" placeholder="Ex: 0700000000" />
+          <label class="muted" style="margin-top:6px">Adresse</label>
+          <input type="text" id="cl-new-address" class="form-control compact" placeholder="Optionnel" />
+          <div style="margin-top:10px; display:flex; gap:8px; justify-content:flex-end">
+            <button id="cl-cancel" class="btn-ghost">Annuler</button>
+            <button id="cl-create" class="btn">Créer et sélectionner</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+    document.body.appendChild(dlg);
+
+    const elSearchBox = dlg.querySelector("#cl-search");
+    const elList = dlg.querySelector("#cl-list");
+    const elCancel = dlg.querySelector("#cl-cancel");
+    const elCreate = dlg.querySelector("#cl-create");
+
+    elCancel.addEventListener("click", () => dlg.remove());
+
+    let clients = [];
+    function renderList(rows) {
+      if (!rows.length) {
+        elList.innerHTML = '<div class="muted">Aucun client</div>';
+        return;
+      }
+      let h = '<div style="display:flex; flex-direction:column; gap:6px">';
+      rows.forEach((c) => {
+        const label = `${c.name || "Client"}${c.id ? " (#" + c.id + ")" : ""}${
+          c.phone ? " • " + c.phone : ""
+        }`;
+        h += `<button class="btn-ghost" data-c="${c.id}" style="text-align:left">${label}</button>`;
+      });
+      h += "</div>";
+      elList.innerHTML = h;
+      elList.querySelectorAll("[data-c]").forEach((btn) =>
+        btn.addEventListener("click", () => {
+          const id = parseInt(btn.getAttribute("data-c"), 10);
+          const cli = clients.find((x) => x.id === id);
+          if (cli) {
+            selectedClient = {
+              id: cli.id,
+              name: cli.name,
+              phone: cli.phone || "",
+            };
+            renderSelectedClient();
+            dlg.remove();
+          }
+        })
+      );
+    }
+
+    fetchClients().then((rows) => {
+      clients = rows || [];
+      renderList(clients);
+    });
+
+    elSearchBox.addEventListener("input", () => {
+      const q = (elSearchBox.value || "").toLowerCase().trim();
+      const filtered = q
+        ? clients.filter(
+            (c) =>
+              (c.name || "").toLowerCase().includes(q) ||
+              (c.phone || "").toLowerCase().includes(q)
+          )
+        : clients;
+      renderList(filtered);
+    });
+
+    elCreate.addEventListener("click", async () => {
+      const name = dlg.querySelector("#cl-new-name").value.trim();
+      const phone = dlg.querySelector("#cl-new-phone").value.trim();
+      const address = dlg.querySelector("#cl-new-address").value.trim();
+      if (!name) {
+        window.showToast && window.showToast("error", "Nom requis");
+        return;
+      }
+      try {
+        const r = await fetch(BASE + "/api/v1/clients", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders() },
+          body: JSON.stringify({ name, phone, address }),
+        });
+        if (!r.ok) {
+          const t = await r.text();
+          window.showToast &&
+            window.showToast("error", t || "Création échouée");
+          return;
+        }
+        const j = await r.json();
+        selectedClient = { id: j.id, name, phone };
+        renderSelectedClient();
+        dlg.remove();
+      } catch (_) {
+        window.showToast && window.showToast("error", "Erreur réseau");
+      }
+    });
+  }
+
+  if (elClientOpen) {
+    elClientOpen.addEventListener("click", (e) => {
+      e.preventDefault();
+      openClientModal();
+    });
+  }
+
   // Init
   loadDepots();
   renderCart();
+  renderSelectedClient();
 })();

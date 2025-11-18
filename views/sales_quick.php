@@ -8,8 +8,11 @@
             <select id="sq-depot" class="form-control" style="min-width:220px"></select>
         </div>
         <div>
-            <label class="muted">Client (ID optionnel)</label>
-            <input id="sq-client" type="number" min="0" class="form-control" placeholder="0 = Aucun" style="width:160px" />
+            <label class="muted">Client</label>
+            <div style="display:flex;gap:8px;align-items:center">
+                <button id="sq-client-open" class="btn-ghost">Sélectionner / Créer</button>
+                <span id="sq-client-selected" class="muted">Aucun client sélectionné</span>
+            </div>
         </div>
         <div>
             <label class="muted">Tout cash</label>
