@@ -18,7 +18,9 @@ $assetBase = preg_replace('#/public$#', '', $scriptDir);
                 <option value="">Tous</option>
                 <option value="draft">Brouillon</option>
                 <option value="ordered">Commandé</option>
+                <option value="partially_received">Partiel</option>
                 <option value="received">Reçu</option>
+                <option value="cancelled">Annulé</option>
             </select>
         </div>
         <div class="form-field" style="min-width:240px">
@@ -42,14 +44,33 @@ $assetBase = preg_replace('#/public$#', '', $scriptDir);
     <div id="orders-empty" class="muted" style="display:none;padding:.75rem">Aucune commande trouvée.</div>
 </section>
 
+<!-- Modal réception partielle -->
+<div id="receive-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.4);align-items:center;justify-content:center;">
+    <div style="background:#fff;padding:1rem 1.25rem;max-width:680px;width:100%;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.25);">
+        <h3 style="margin-top:0">Réception commande <span id="rm-ref"></span></h3>
+        <div id="rm-msg" class="muted" style="margin-bottom:.5rem"></div>
+        <div style="max-height:320px;overflow:auto;border:1px solid #ddd">
+            <table class="excel" style="width:100%">
+                <thead>
+                    <tr>
+                        <th>Produit</th>
+                        <th>Commandé</th>
+                        <th>Restant</th>
+                        <th>Recevoir</th>
+                    </tr>
+                </thead>
+                <tbody id="rm-body"></tbody>
+            </table>
+        </div>
+        <div style="margin-top:.75rem;display:flex;gap:.5rem;justify-content:flex-end">
+            <button id="rm-cancel" class="btn secondary" type="button">Annuler</button>
+            <button id="rm-submit" class="btn" type="button"><i class="fa fa-check"></i> Valider réception</button>
+        </div>
+    </div>
+</div>
+
 <script>
     window.ROUTE_BASE = "<?= $scriptDir ?>";
     window.ASSET_BASE = "<?= $assetBase ?>";
 </script>
-<script src="<?= $assetBase ?>/assets/js/orders.js"></script>
-<?php
-$scriptDir = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'])), '/');
-$assetBase = preg_replace('#/public$#', '', $scriptDir);
-?>
-
 <script src="<?= $assetBase ?>/assets/js/orders.js"></script>

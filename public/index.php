@@ -229,6 +229,14 @@ if (str_starts_with($path, '/api/v1')) {
     // Auth login -> token
     if ($path === '/api/v1/auth/login' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
+        // Assurer colonne initial_quantity (une fois)
+        try {
+            $col = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="order_items" AND COLUMN_NAME="initial_quantity"');
+            if (!$col) {
+                DB::execute('ALTER TABLE order_items ADD COLUMN initial_quantity INT NOT NULL DEFAULT 0');
+            }
+        } catch (\Throwable $e) { /* ignorer */
+        }
         $email = $data['email'] ?? '';
         $password = $data['password'] ?? '';
         $uModel = new User();
@@ -839,17 +847,49 @@ if (str_starts_with($path, '/api/v1')) {
             echo json_encode(['error' => 'Items required']);
             exit;
         }
-        $ref = $data['reference'] ?? strtoupper(substr(md5(uniqid()), 0, 8));
+        $providedRef = trim($data['reference'] ?? '');
+        if ($providedRef !== '') {
+            // Vérifier unicité utilisateur fournie
+            $exists = DB::query('SELECT id FROM orders WHERE reference=:r LIMIT 1', [':r' => $providedRef]);
+            if ($exists) {
+                http_response_code(409);
+                echo json_encode(['error' => 'Référence déjà utilisée']);
+                exit;
+            }
+            $ref = $providedRef;
+        } else {
+            // Génération auto jusqu'à unicité
+            do {
+                $candidate = 'PO-' . strtoupper(substr(md5(uniqid('', true)), 0, 8));
+                $exists = DB::query('SELECT id FROM orders WHERE reference=:r LIMIT 1', [':r' => $candidate]);
+            } while ($exists);
+            $ref = $candidate;
+        }
         $supplier = $data['supplier'] ?? null;
-        $status = in_array(($data['status'] ?? 'received'), ['draft', 'ordered', 'received']) ? $data['status'] : 'received';
+        $status = in_array(($data['status'] ?? 'ordered'), ['draft', 'ordered', 'received', 'cancelled', 'partially_received']) ? $data['status'] : 'ordered';
+        if ($status === 'received' && empty($data['depot_id'])) {
+            // Si réception immédiate demandée exiger depot_id
+            http_response_code(422);
+            echo json_encode(['error' => 'depot_id requis pour statut reçu']);
+            exit;
+        }
         $total = 0;
         foreach ($items as $it) {
             $total += ((int)$it['unit_cost'] * (int)$it['quantity']);
         }
+        // Assurer colonne total_amount_remaining
+        try {
+            $colRemain = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="orders" AND COLUMN_NAME="total_amount_remaining"');
+            if (!$colRemain) {
+                DB::execute('ALTER TABLE orders ADD COLUMN total_amount_remaining INT NOT NULL DEFAULT 0');
+            }
+        } catch (\Throwable $e) {
+        }
         DB::execute('INSERT INTO orders(reference,supplier,status,total_amount,ordered_at,created_at) VALUES(:r,:s,:st,:t,NOW(),NOW())', [':r' => $ref, ':s' => $supplier, ':st' => $status, ':t' => $total]);
         $orderId = (int)DB::query('SELECT LAST_INSERT_ID() id')[0]['id'];
+        DB::execute('UPDATE orders SET total_amount_remaining=:rem WHERE id=:id', [':rem' => $total, ':id' => $orderId]);
         foreach ($items as $it) {
-            DB::execute('INSERT INTO order_items(order_id,product_id,quantity,unit_cost,subtotal,created_at) VALUES(:o,:p,:q,:c,:st,NOW())', [':o' => $orderId, ':p' => (int)$it['product_id'], ':q' => (int)$it['quantity'], ':c' => (int)$it['unit_cost'], ':st' => ((int)$it['unit_cost'] * (int)$it['quantity'])]);
+            DB::execute('INSERT INTO order_items(order_id,product_id,initial_quantity,quantity,unit_cost,subtotal,created_at) VALUES(:o,:p,:iq,:q,:c,:st,NOW())', [':o' => $orderId, ':p' => (int)$it['product_id'], ':iq' => (int)$it['quantity'], ':q' => (int)$it['quantity'], ':c' => (int)$it['unit_cost'], ':st' => ((int)$it['unit_cost'] * (int)$it['quantity'])]);
             // Si reçu, on impacte le stock; sinon, on ne touche pas au stock
             if ($status === 'received') {
                 $depotId = (int)($data['depot_id'] ?? 1);
@@ -862,10 +902,20 @@ if (str_starts_with($path, '/api/v1')) {
     }
     if ($path === '/api/v1/orders' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         requireAuth();
+        // Vérifier présence colonne total_amount_remaining (ajout rétro-actif si nécessaire)
+        try {
+            $colRemain = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="orders" AND COLUMN_NAME="total_amount_remaining"');
+            if (!$colRemain) {
+                DB::execute('ALTER TABLE orders ADD COLUMN total_amount_remaining INT NOT NULL DEFAULT 0');
+                DB::execute('UPDATE orders SET total_amount_remaining=total_amount WHERE total_amount_remaining=0');
+            }
+        } catch (\Throwable $e) {
+            // En cas d'erreur on continue, SELECT avec COALESCE tombera sur total_amount
+        }
         $where = [];
         $params = [];
         $status = trim($_GET['status'] ?? '');
-        if ($status !== '' && in_array($status, ['draft', 'ordered', 'received'])) {
+        if ($status !== '' && in_array($status, ['draft', 'ordered', 'received', 'cancelled', 'partially_received'])) {
             $where[] = 'status = :st';
             $params[':st'] = $status;
         }
@@ -874,7 +924,7 @@ if (str_starts_with($path, '/api/v1')) {
             $where[] = '(reference LIKE :q OR supplier LIKE :q)';
             $params[':q'] = '%' . $q . '%';
         }
-        $sql = 'SELECT id,reference,supplier,status,total_amount,ordered_at FROM orders';
+        $sql = 'SELECT id,reference,supplier,status,total_amount,COALESCE(total_amount_remaining,total_amount) AS total_amount_remaining,ordered_at FROM orders';
         if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
         $sql .= ' ORDER BY ordered_at DESC LIMIT 200';
         $rows = DB::query($sql, $params);
@@ -899,38 +949,98 @@ if (str_starts_with($path, '/api/v1')) {
             echo json_encode(['error' => 'Not found']);
             exit;
         }
-        if (($ord['status'] ?? '') === 'received') {
+        if (in_array(($ord['status'] ?? ''), ['received', 'cancelled']) && empty($data['items'])) {
             http_response_code(409);
-            echo json_encode(['error' => 'Déjà reçu']);
+            echo json_encode(['error' => 'Action non autorisée (statut final)']);
             exit;
         }
-        // Fetch items
-        $items = DB::query('SELECT product_id, quantity, unit_cost FROM order_items WHERE order_id=:o', [':o' => $id]);
-        // Apply stock movements
+        $incomingItems = $data['items'] ?? null; // format: [{product_id, quantity}]
+        $dbItems = DB::query('SELECT product_id, quantity, initial_quantity, unit_cost FROM order_items WHERE order_id=:o', [':o' => $id]);
         $ref = (string)$ord['reference'];
-        foreach ($items as $it) {
-            $pid = (int)$it['product_id'];
-            $qty = (int)$it['quantity'];
-            if ($qty > 0) {
-                (new StockMovement())->move($depotId, $pid, 'in', $qty, date('Y-m-d H:i:s'), null, 'order:' . $ref);
-                Stock::adjust($depotId, $pid, 'in', $qty);
+        if ($incomingItems && is_array($incomingItems) && count($incomingItems) > 0) {
+            // Réception partielle
+            $map = [];
+            foreach ($dbItems as $di) {
+                $map[(int)$di['product_id']] = (int)$di['quantity'];
             }
+            foreach ($incomingItems as $ri) {
+                $pid = (int)($ri['product_id'] ?? 0);
+                $recvQty = max(0, (int)($ri['quantity'] ?? 0));
+                if ($pid <= 0 || $recvQty <= 0) continue;
+                $remaining = $map[$pid] ?? 0;
+                if ($remaining <= 0) continue; // déjà tout reçu
+                if ($recvQty > $remaining) $recvQty = $remaining; // limiter
+                // Mouvement & ajustement
+                (new StockMovement())->move($depotId, $pid, 'in', $recvQty, date('Y-m-d H:i:s'), null, 'order:' . $ref);
+                Stock::adjust($depotId, $pid, 'in', $recvQty);
+                // Réduire quantité restante dans la ligne
+                DB::execute('UPDATE order_items SET quantity=quantity-:q WHERE order_id=:o AND product_id=:p AND quantity>=:q', [':q' => $recvQty, ':o' => $id, ':p' => $pid]);
+                $map[$pid] -= $recvQty;
+            }
+            // Recalcul statut + montants restants
+            $remainRows = DB::query('SELECT SUM(quantity) AS remain, SUM(quantity*unit_cost) AS remain_total FROM order_items WHERE order_id=:o', [':o' => $id]);
+            $remain = (int)($remainRows[0]['remain'] ?? 0);
+            $remainTotal = (int)($remainRows[0]['remain_total'] ?? 0);
+            $newStatus = $remain > 0 ? 'partially_received' : 'received';
+            DB::execute('UPDATE orders SET status=:st,total_amount_remaining=:rt,updated_at=NOW() WHERE id=:id', [':st' => $newStatus, ':rt' => $remainTotal, ':id' => $id]);
+            echo json_encode(['received' => true, 'partial' => $remain > 0, 'remaining' => $remain, 'remaining_total' => $remainTotal, 'status' => $newStatus]);
+        } else {
+            // Réception totale (ancienne logique)
+            foreach ($dbItems as $it) {
+                $pid = (int)$it['product_id'];
+                $qty = (int)$it['quantity']; // restant
+                if ($qty > 0) {
+                    (new StockMovement())->move($depotId, $pid, 'in', $qty, date('Y-m-d H:i:s'), null, 'order:' . $ref);
+                    Stock::adjust($depotId, $pid, 'in', $qty);
+                }
+                // mettre à zéro quantité restante
+                DB::execute('UPDATE order_items SET quantity=0 WHERE order_id=:o AND product_id=:p', [':o' => $id, ':p' => $pid]);
+            }
+            DB::execute('UPDATE orders SET status="received", total_amount_remaining=0, ordered_at=NOW(), updated_at=NOW() WHERE id=:id', [':id' => $id]);
+            echo json_encode(['received' => true, 'partial' => false, 'remaining' => 0, 'remaining_total' => 0, 'status' => 'received']);
         }
-        DB::execute('UPDATE orders SET status="received", ordered_at=NOW(), updated_at=NOW() WHERE id=:id', [':id' => $id]);
-        echo json_encode(['received' => true, 'id' => $id]);
+        exit;
+    }
+    // Cancel order
+    if (preg_match('#^/api/v1/orders/(\d+)/cancel$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
+        $u = requireAuth();
+        requireRole($u, ['admin', 'gerant']);
+        $id = (int)$m[1];
+        $ord = DB::query('SELECT id,status FROM orders WHERE id=:id LIMIT 1', [':id' => $id])[0] ?? null;
+        if (!$ord) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Not found']);
+            exit;
+        }
+        if (in_array(($ord['status'] ?? ''), ['received', 'cancelled', 'partially_received'])) {
+            http_response_code(409);
+            echo json_encode(['error' => 'Statut final']);
+            exit;
+        }
+        DB::execute('UPDATE orders SET status="cancelled", updated_at=NOW() WHERE id=:id', [':id' => $id]);
+        echo json_encode(['cancelled' => true, 'id' => $id]);
         exit;
     }
     // Get single order with items
     if (preg_match('#^/api/v1/orders/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
         requireAuth();
         $id = (int)$m[1];
-        $ord = DB::query('SELECT id,reference,supplier,status,total_amount,ordered_at,created_at FROM orders WHERE id=:id LIMIT 1', [':id' => $id])[0] ?? null;
+        // Même vérification colonne pour consultation individuelle
+        try {
+            $colRemain = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="orders" AND COLUMN_NAME="total_amount_remaining"');
+            if (!$colRemain) {
+                DB::execute('ALTER TABLE orders ADD COLUMN total_amount_remaining INT NOT NULL DEFAULT 0');
+                DB::execute('UPDATE orders SET total_amount_remaining=total_amount WHERE total_amount_remaining=0');
+            }
+        } catch (\Throwable $e) {
+        }
+        $ord = DB::query('SELECT id,reference,supplier,status,total_amount,COALESCE(total_amount_remaining,total_amount) AS total_amount_remaining,ordered_at,created_at FROM orders WHERE id=:id LIMIT 1', [':id' => $id])[0] ?? null;
         if (!$ord) {
             http_response_code(404);
             echo json_encode(['error' => 'Not found']);
             exit;
         }
-        $items = DB::query('SELECT oi.product_id, p.name AS product_name, oi.quantity, oi.unit_cost, oi.subtotal FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=:o', [':o' => $id]);
+        $items = DB::query('SELECT oi.product_id, p.name AS product_name, oi.initial_quantity, oi.quantity, oi.unit_cost, oi.subtotal FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=:o', [':o' => $id]);
         echo json_encode(['order' => $ord, 'items' => $items]);
         exit;
     }
@@ -1287,7 +1397,7 @@ if ($path === '/orders/export') {
         echo 'Commande introuvable';
         exit;
     }
-    $items = DB::query('SELECT oi.product_id, p.name AS product_name, oi.quantity, oi.unit_cost, oi.subtotal FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=:o', [':o' => $id]);
+    $items = DB::query('SELECT oi.product_id, p.name AS product_name, oi.initial_quantity, oi.quantity, oi.unit_cost, oi.subtotal FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=:o', [':o' => $id]);
     if (!class_exists('TCPDF')) {
         // Attempt to load if installed
         try {
@@ -1309,9 +1419,9 @@ if ($path === '/orders/export') {
     $html .= '<div>Fournisseur: ' . htmlspecialchars((string)$ord['supplier']) . '</div>';
     $html .= '<div>Status: ' . htmlspecialchars((string)$ord['status']) . '</div>';
     $html .= '<div>Date: ' . htmlspecialchars((string)$ord['ordered_at']) . '</div>';
-    $html .= '<br /><table border="1" cellpadding="6"><thead><tr><th>Produit</th><th>Qté</th><th>PU</th><th>Sous-total</th></tr></thead><tbody>';
+    $html .= '<br /><table border="1" cellpadding="6"><thead><tr><th>Produit</th><th>Qté commandée</th><th>Qté restante</th><th>PU</th><th>Sous-total</th></tr></thead><tbody>';
     foreach ($items as $it) {
-        $html .= '<tr><td>' . htmlspecialchars($it['product_name']) . '</td><td align="right">' . (int)$it['quantity'] . '</td><td align="right">' . (int)$it['unit_cost'] . '</td><td align="right">' . (int)$it['subtotal'] . '</td></tr>';
+        $html .= '<tr><td>' . htmlspecialchars($it['product_name']) . '</td><td align="right">' . (int)$it['initial_quantity'] . '</td><td align="right">' . (int)$it['quantity'] . '</td><td align="right">' . (int)$it['unit_cost'] . '</td><td align="right">' . (int)$it['subtotal'] . '</td></tr>';
     }
     $html .= '</tbody></table><br /><h3>Total: ' . (int)$ord['total_amount'] . '</h3>';
     $pdf->writeHTML($html, true, false, true, false, '');
