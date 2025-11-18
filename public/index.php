@@ -1076,6 +1076,92 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode($rows);
         exit;
     }
+    // Products export (CSV/PDF) with same scoping and filters
+    if ($path === '/api/v1/products/export' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $auth = requireAuth();
+        // products:view suffit pour exporter la liste
+        requirePermission($auth, 'products', 'view');
+        $role = (string)($auth['role'] ?? '');
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
+        $q = trim($_GET['q'] ?? '');
+        $depId = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
+        if ($role !== 'admin' && $role !== 'gerant') {
+            $depId = $userDepotId ?: null;
+        }
+        $onlyInStock = isset($_GET['only_in_stock']) && $_GET['only_in_stock'] !== '' ? ($_GET['only_in_stock'] === '1') : false;
+        if ($role !== 'admin' && $role !== 'gerant') {
+            $onlyInStock = true;
+        }
+        $params = [];
+        if ($depId !== null) $params[':dep'] = $depId;
+        $stockDepotExpr = ($depId !== null)
+            ? '(SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id = p.id AND s.depot_id = :dep)'
+            : 'NULL';
+        if ($q !== '') {
+            $params[':q'] = '%' . $q . '%';
+            $sql = 'SELECT p.id,p.name,p.sku,p.unit_price,
+                (SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id = p.id) AS stock_total,
+                ' . $stockDepotExpr . ' AS stock_depot
+                FROM products p WHERE (p.name LIKE :q OR p.sku LIKE :q)';
+            if ($depId !== null && $onlyInStock) {
+                $sql .= ' AND (SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id = p.id AND s.depot_id = :dep) > 0';
+            }
+            $sql .= ' ORDER BY p.id DESC';
+        } else {
+            $sql = 'SELECT p.id,p.name,p.sku,p.unit_price,
+                (SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id = p.id) AS stock_total,
+                ' . $stockDepotExpr . ' AS stock_depot
+                FROM products p';
+            if ($depId !== null && $onlyInStock) {
+                $sql .= ' WHERE (SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id = p.id AND s.depot_id = :dep) > 0';
+            }
+            $sql .= ' ORDER BY p.id DESC';
+        }
+        $rows = DB::query($sql, $params);
+        $format = strtolower(trim($_GET['format'] ?? 'csv'));
+        if ($format === 'pdf') {
+            // Générer PDF via TCPDF
+            $pdf = new TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
+            $pdf->SetCreator('Hill');
+            $pdf->SetAuthor('Hill');
+            $pdf->SetTitle('Produits');
+            $pdf->SetMargins(10, 10, 10);
+            $pdf->AddPage();
+            $html = '<h3>Liste des produits</h3>';
+            $html .= '<table border="1" cellpadding="4"><thead><tr><th>ID</th><th>SKU</th><th>Produit</th><th>PU</th><th>Stock</th></tr></thead><tbody>';
+            foreach ($rows as $r) {
+                $stock = ($depId !== null) ? ($r['stock_depot'] ?? 0) : ($r['stock_total'] ?? 0);
+                $html .= '<tr>'
+                    . '<td>' . (int)$r['id'] . '</td>'
+                    . '<td>' . htmlspecialchars($r['sku'] ?? '') . '</td>'
+                    . '<td>' . htmlspecialchars($r['name'] ?? '') . '</td>'
+                    . '<td align="right">' . htmlspecialchars(format_fcfa((int)$r['unit_price'])) . '</td>'
+                    . '<td align="right">' . (int)$stock . '</td>'
+                    . '</tr>';
+            }
+            $html .= '</tbody></table>';
+            $pdf->writeHTML($html, true, false, true, false, '');
+            $pdf->Output('produits.pdf', 'I');
+            exit;
+        }
+        // CSV par défaut (Excel compatible)
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename="produits.csv"');
+        $out = fopen('php://output', 'w');
+        fputcsv($out, ['ID', 'SKU', 'Produit', 'Prix (FCFA)', 'Stock']);
+        foreach ($rows as $r) {
+            $stock = ($depId !== null) ? ($r['stock_depot'] ?? 0) : ($r['stock_total'] ?? 0);
+            fputcsv($out, [
+                (int)$r['id'],
+                (string)($r['sku'] ?? ''),
+                (string)($r['name'] ?? ''),
+                (int)$r['unit_price'],
+                (int)$stock,
+            ]);
+        }
+        fclose($out);
+        exit;
+    }
     // Stocks by depot for a product
     if ($path === '/api/v1/stocks' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $auth = requireAuth();

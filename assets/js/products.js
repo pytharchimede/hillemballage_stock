@@ -35,6 +35,15 @@
     }
     const perms = (_me && _me.permissions) || {};
     const role = (_me && _me.role) || "";
+    // Références filtres
+    const elQ = document.getElementById("ps-q");
+    const elDepotWrap = document.getElementById("ps-depot-wrap");
+    const elDepot = document.getElementById("ps-depot");
+    const elDepotFilter = document.getElementById("ps-depot-filter");
+    const elOnly = document.getElementById("ps-only-in-stock");
+    const elExportCsv = document.getElementById("ps-export-csv");
+    const elExportPdf = document.getElementById("ps-export-pdf");
+    const psHint = document.getElementById("ps-hint");
     // Masquer les actions top selon permissions/role
     try {
       const newBtn = document.getElementById("btn-new-product");
@@ -49,9 +58,60 @@
         fixBtn.style.display = role === "admin" ? "inline-block" : "none";
       }
     } catch (_) {}
+    // Afficher/peupler dépôts pour admin/gérant
+    if (elDepotWrap) {
+      elDepotWrap.style.display =
+        role === "admin" || role === "gerant" ? "flex" : "none";
+    }
+    if (elDepot && (role === "admin" || role === "gerant")) {
+      const depots = await fetchDepots();
+      elDepot.innerHTML = "";
+      const optAll = document.createElement("option");
+      optAll.value = "";
+      optAll.textContent = "Tous les dépôts";
+      elDepot.appendChild(optAll);
+      (depots || []).forEach((d) => {
+        const o = document.createElement("option");
+        o.value = d.id;
+        o.textContent = d.name + (d.code ? " (" + d.code + ")" : "");
+        elDepot.appendChild(o);
+      });
+      if (elDepotFilter && !elDepotFilter._bind) {
+        elDepotFilter._bind = true;
+        elDepotFilter.addEventListener("input", function () {
+          const qf = (elDepotFilter.value || "").toLowerCase().trim();
+          for (let i = 0; i < elDepot.options.length; i++) {
+            const t = (elDepot.options[i].text || "").toLowerCase();
+            elDepot.options[i].style.display =
+              qf && !t.includes(qf) ? "none" : "";
+          }
+        });
+      }
+    }
+
+    function currentFilters() {
+      const q = elQ && elQ.value ? elQ.value.trim() : "";
+      const only = !!(elOnly && elOnly.checked);
+      let depotId = "";
+      if (elDepot && (role === "admin" || role === "gerant"))
+        depotId = elDepot.value || "";
+      return { q, only_in_stock: only, depot_id: depotId };
+    }
+
     let token = localStorage.getItem("api_token") || readCookieToken() || "";
     let url = apiUrl("/api/v1/products");
-    if (token) url += "?api_token=" + encodeURIComponent(token);
+    const f = currentFilters();
+    const qp = [];
+    if (f.q) qp.push("q=" + encodeURIComponent(f.q));
+    if (f.depot_id !== "")
+      qp.push("depot_id=" + encodeURIComponent(f.depot_id));
+    if (f.only_in_stock) qp.push("only_in_stock=1");
+    if (qp.length) url += "?" + qp.join("&");
+    if (token)
+      url +=
+        (url.indexOf("?") === -1 ? "?" : "&") +
+        "api_token=" +
+        encodeURIComponent(token);
     let r = await fetch(url, {
       headers: token ? { Authorization: "Bearer " + token } : {},
     });
@@ -77,6 +137,16 @@
     }
     if (!r.ok) return;
     const data = await r.json();
+    if (psHint) {
+      const parts = [];
+      if (f.q) parts.push('Recherche: "' + f.q + '"');
+      if (f.depot_id && elDepot)
+        parts.push(
+          "Dépôt: " + (elDepot.selectedOptions[0]?.text || f.depot_id)
+        );
+      if (f.only_in_stock) parts.push("Seulement en stock");
+      psHint.textContent = parts.join(" • ");
+    }
     const grid = document.getElementById("products-grid");
     const empty = document.getElementById("products-empty");
     if (!data || data.length === 0) {
@@ -160,6 +230,50 @@
       })
       .join("");
     if (grid) grid.innerHTML = cards;
+
+    // Listeners filtres -> reload
+    function scheduleReload() {
+      load();
+    }
+    if (elQ && !elQ._bind) {
+      elQ._bind = true;
+      elQ.addEventListener("input", scheduleReload);
+    }
+    if (elDepot && !elDepot._bind) {
+      elDepot._bind = true;
+      elDepot.addEventListener("change", scheduleReload);
+    }
+    if (elOnly && !elOnly._bind) {
+      elOnly._bind = true;
+      elOnly.addEventListener("change", scheduleReload);
+    }
+
+    // Export buttons
+    function openExport(fmt) {
+      let base = apiUrl("/api/v1/products/export");
+      const q = [];
+      if (f.q) q.push("q=" + encodeURIComponent(f.q));
+      if (f.depot_id !== "")
+        q.push("depot_id=" + encodeURIComponent(f.depot_id));
+      if (f.only_in_stock) q.push("only_in_stock=1");
+      q.push("format=" + encodeURIComponent(fmt));
+      const t = localStorage.getItem("api_token") || readCookieToken() || "";
+      if (t) q.push("api_token=" + encodeURIComponent(t));
+      const href = base + (q.length ? "?" + q.join("&") : "");
+      window.open(href, "_blank");
+    }
+    if (elExportCsv && !elExportCsv._bind) {
+      elExportCsv._bind = true;
+      elExportCsv.addEventListener("click", function () {
+        openExport("csv");
+      });
+    }
+    if (elExportPdf && !elExportPdf._bind) {
+      elExportPdf._bind = true;
+      elExportPdf.addEventListener("click", function () {
+        openExport("pdf");
+      });
+    }
   }
 
   // Support de l'ancien formulaire inline (optionnel)
