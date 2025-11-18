@@ -2,58 +2,41 @@
 $scriptDir = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'])), '/');
 $assetBase = preg_replace('#/public$#', '', $scriptDir);
 ?>
-<h1>Utilisateurs</h1>
+<h1 style="display:flex;align-items:center;justify-content:space-between;gap:1rem">
+    <span>Utilisateurs</span>
+    <a class="btn" href="<?= $scriptDir ?>/users/new"><i class="fa fa-user-plus"></i> Nouvel utilisateur</a>
+</h1>
 <section class="card">
-    <h3>Droits & Groupes</h3>
-    <p class="muted">Rôles disponibles et leurs permissions par défaut :</p>
-    <ul>
-        <li><strong>Admin</strong> : accès total (utilisateurs, produits, dépôts, stocks, ventes, rapports).</li>
-        <li><strong>Gérant</strong> : gestion de son dépôt (stocks, transferts, commandes, ventes locales).</li>
-        <li><strong>Livreur</strong> : ventes/encaissements, clients et tournée.</li>
-    </ul>
-    <div style="display:flex; gap:.5rem; align-items:center; margin-top:.5rem">
-        <label for="role-filter" class="muted">Filtrer par rôle</label>
-        <select id="role-filter">
-            <option value="">Tous</option>
-            <option value="admin">Admin</option>
-            <option value="gerant">Gérant</option>
-            <option value="livreur">Livreur</option>
-        </select>
-    </div>
-    <small class="muted">Astuce : vous pouvez assigner un dépôt au gérant pour le lier à un site.</small>
-
-</section>
-<section class="card">
-    <h3>Nouvel utilisateur</h3>
-    <form id="user-form">
-        <div class="form-row">
-            <label>Nom<input type="text" name="name" required></label>
-            <label>Email<input type="email" name="email" required></label>
-            <label>Rôle
-                <select name="role">
-                    <option value="admin">Admin</option>
-                    <option value="gerant">Gérant</option>
-                    <option value="livreur">Livreur</option>
-                </select>
-            </label>
-            <label>Dépôt ID<input type="number" name="depot_id" min="1" value="1"></label>
-            <label>Mot de passe<input type="password" name="password" required></label>
+    <h3>Filtres</h3>
+    <div class="form-row" style="align-items:flex-end">
+        <div class="form-field" style="min-width:240px">
+            <label for="q-filter">Recherche</label>
+            <input id="q-filter" class="form-control" type="text" placeholder="Nom ou email…" />
         </div>
-        <button class="btn" type="submit">Créer</button>
-    </form>
+        <div class="form-field" style="min-width:200px">
+            <label for="role-filter">Rôle</label>
+            <select id="role-filter" class="form-control">
+                <option value="">Tous</option>
+                <option value="admin">Admin</option>
+                <option value="gerant">Gérant</option>
+                <option value="livreur">Livreur</option>
+            </select>
+        </div>
+        <div class="form-field" style="min-width:220px">
+            <label for="depot-filter">Dépôt</label>
+            <select id="depot-filter" class="form-control"></select>
+        </div>
+        <div class="form-field">
+            <button id="btn-reset-filters" class="btn secondary" type="button"><i class="fa fa-rotate"></i> Réinitialiser</button>
+        </div>
+    </div>
+    <small class="muted">Astuce : filtrez par dépôt et par rôle, ou tapez un nom/email.</small>
 </section>
 <section class="card">
-    <h3>Liste</h3>
-    <table class="excel" id="users-table">
-        <thead>
-            <tr>
-                <th>Nom</th>
-                <th>Email</th>
-                <th>Rôle</th>
-                <th>Dépôt</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
+    <h3>Liste des utilisateurs</h3>
+    <div id="users-grid" class="cards-grid"></div>
+    <div id="users-empty" class="muted" style="display:none;padding:.75rem">Aucun utilisateur trouvé.</div>
+    <table style="display:none" class="excel" id="users-table">
         <tbody></tbody>
     </table>
 </section>

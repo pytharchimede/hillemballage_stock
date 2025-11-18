@@ -30,6 +30,7 @@ return [
             'role' => ['type' => 'varchar', 'length' => 40], // admin, gerant, livreur
             'depot_id' => ['type' => 'int', 'unsigned' => true, 'nullable' => true],
             'api_token' => ['type' => 'varchar', 'length' => 64, 'nullable' => true],
+            'permissions' => ['type' => 'text', 'nullable' => true],
             'created_at' => ['type' => 'datetime', 'default' => 'CURRENT_TIMESTAMP'],
             'updated_at' => ['type' => 'datetime', 'nullable' => true],
         ],

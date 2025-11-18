@@ -1,6 +1,7 @@
 (function () {
   const routeBase = window.ROUTE_BASE || "";
   let stateDepots = [];
+  let debounceT;
 
   function readCookieToken() {
     try {
@@ -34,38 +35,42 @@
   }
 
   function renderUsers(users) {
-    const tb = document.querySelector("#users-table tbody");
-    const roleOptions = ["admin", "gerant", "livreur"];
-    tb.innerHTML = users
-      .map((u) => {
-        const roleSel = `<select class=\"u-role\" data-id=\"${
-          u.id
-        }\">${roleOptions
-          .map(
-            (r) =>
-              `<option value=\"${r}\" ${
-                u.role === r ? "selected" : ""
-              }>${r}</option>`
-          )
-          .join("")}</select>`;
-        const depotSel = `<select class=\"u-depot\" data-id=\"${
-          u.id
-        }\"><option value=\"\"></option>${stateDepots
-          .map(
-            (d) =>
-              `<option value=\"${d.id}\" ${
-                u.depot_id == d.id ? "selected" : ""
-              }>${d.name} (${d.code || ""})</option>`
-          )
-          .join("")}</select>`;
-        const saveBtn = `<button class=\"btn u-save\" data-id=\"${u.id}\">Mettre à jour</button>`;
-        return `<tr>
-          <td>${u.name}</td>
-          <td>${u.email}</td>
-          <td>${roleSel}</td>
-          <td>${depotSel}</td>
-          <td>${saveBtn}</td>
-        </tr>`;
+    // Cards grid
+    const grid = document.getElementById("users-grid");
+    const empty = document.getElementById("users-empty");
+    if (!grid) return;
+    if (!users || users.length === 0) {
+      grid.innerHTML = "";
+      if (empty) empty.style.display = "block";
+      return;
+    }
+    if (empty) empty.style.display = "none";
+    const depotMap = {};
+    stateDepots.forEach((d) => (depotMap[d.id] = d));
+    grid.innerHTML = users
+      .map(function (u) {
+        const dep =
+          u.depot_id && depotMap[u.depot_id] ? depotMap[u.depot_id] : null;
+        const dlabel = dep
+          ? `${dep.name}${dep.code ? " (" + dep.code + ")" : ""}`
+          : '<span class="muted">Non assigné</span>';
+        const roleBadge = `<span class="badge">${escapeHtml(
+          u.role || ""
+        )}</span>`;
+        return `
+        <div class="card-client" data-id="${u.id}">
+          <div class="cl-header"><div class="avatar avatar-fallback"><i class="fa fa-user"></i></div></div>
+          <div class="cl-body">
+            <div class="cl-name">${escapeHtml(u.name || "")}</div>
+            <div class="cl-phone"><i class="fa fa-envelope"></i> ${escapeHtml(
+              u.email || ""
+            )}</div>
+            <div class="cl-balance">${roleBadge} · ${dlabel}</div>
+          </div>
+          <div class="cl-actions">
+            <a class="btn" href="${routeBase}/users/edit?id=${u.id}" title="Modifier"><i class="fa fa-pencil"></i></a>
+          </div>
+        </div>`;
       })
       .join("");
   }
@@ -73,7 +78,10 @@
   async function load() {
     let token = localStorage.getItem("api_token") || readCookieToken() || "";
     // Load depots
-    let depUrl = routeBase + "/api/v1/depots";
+    let depUrl =
+      routeBase +
+      "/api/v1/depots" +
+      (token ? "?api_token=" + encodeURIComponent(token) : "");
     let dr = await fetch(depUrl, { headers: authHeaders(token) });
     if (dr.status === 401) {
       token = (await refreshSessionToken()) || token;
@@ -84,10 +92,37 @@
     } else {
       stateDepots = [];
     }
-    // Load users
-    let url = routeBase + "/api/v1/users";
+    // Populate depot filter
+    const depotFilter = document.getElementById("depot-filter");
+    if (depotFilter) {
+      depotFilter.innerHTML =
+        '<option value="">Tous</option>' +
+        stateDepots
+          .map(
+            (d) =>
+              `<option value="${d.id}">${d.name}${
+                d.code ? " (" + d.code + ")" : ""
+              }</option>`
+          )
+          .join("");
+    }
+
+    // Load users with filters
     const role = document.getElementById("role-filter")?.value || "";
-    if (role) url += "?role=" + encodeURIComponent(role);
+    const q = document.getElementById("q-filter")?.value || "";
+    const dep = document.getElementById("depot-filter")?.value || "";
+    const params = new URLSearchParams();
+    if (role) params.set("role", role);
+    if (q) params.set("q", q);
+    if (dep) params.set("depot_id", dep);
+    let baseUsersUrl =
+      routeBase +
+      "/api/v1/users" +
+      (params.toString() ? "?" + params.toString() : "");
+    let url =
+      baseUsersUrl +
+      (baseUsersUrl.indexOf("?") > -1 ? "&" : "?") +
+      (token ? "api_token=" + encodeURIComponent(token) : "");
     let r = await fetch(url, { headers: authHeaders(token) });
     if (r.status === 401) {
       token = (await refreshSessionToken()) || token;
@@ -98,85 +133,28 @@
     renderUsers(users);
   }
 
-  document.getElementById("user-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const form = e.target;
-    const payload = Object.fromEntries(new FormData(form).entries());
-    let token = localStorage.getItem("api_token") || readCookieToken() || "";
-    let url = routeBase + "/api/v1/users";
-    let r = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...authHeaders(token),
-      },
-      body: JSON.stringify(payload),
-    });
-    if (r.status === 401) {
-      token = (await refreshSessionToken()) || token;
-      r = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...authHeaders(token),
-        },
-        body: JSON.stringify(payload),
-      });
-    }
-    if (r.ok) {
-      form.reset();
-      load();
-    }
-  });
+  // formulaire déplacé sur /users/new et /users/edit
 
   const rf = document.getElementById("role-filter");
   if (rf) rf.addEventListener("change", load);
-
-  // Handle inline save
-  const tb = document.querySelector("#users-table tbody");
-  if (tb) {
-    tb.addEventListener("click", async (e) => {
-      const btn = e.target.closest(".u-save");
-      if (!btn) return;
-      const id = parseInt(btn.getAttribute("data-id"), 10);
-      const role =
-        tb.querySelector(`select.u-role[data-id="${id}"]`)?.value || "";
-      const depot =
-        tb.querySelector(`select.u-depot[data-id="${id}"]`)?.value || "";
-      let token = localStorage.getItem("api_token") || readCookieToken() || "";
-      let url = routeBase + "/api/v1/users/" + id;
-      btn.disabled = true;
-      let rr = await fetch(url, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", ...authHeaders(token) },
-        body: JSON.stringify({
-          role: role || null,
-          depot_id: depot ? parseInt(depot, 10) : null,
-        }),
-      });
-      if (rr.status === 401) {
-        token = (await refreshSessionToken()) || token;
-        rr = await fetch(url, {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-            ...authHeaders(token),
-          },
-          body: JSON.stringify({
-            role: role || null,
-            depot_id: depot ? parseInt(depot, 10) : null,
-          }),
-        });
-      }
-      btn.disabled = false;
-      if (!rr.ok) {
-        window.showToast && window.showToast("error", "Mise à jour échouée");
-      } else {
-        window.showToast &&
-          window.showToast("success", "Utilisateur mis à jour");
-      }
+  const df = document.getElementById("depot-filter");
+  if (df) df.addEventListener("change", load);
+  const qf = document.getElementById("q-filter");
+  if (qf)
+    qf.addEventListener("input", function () {
+      clearTimeout(debounceT);
+      debounceT = setTimeout(load, 300);
     });
-  }
+  const resetBtn = document.getElementById("btn-reset-filters");
+  if (resetBtn)
+    resetBtn.addEventListener("click", function () {
+      if (qf) qf.value = "";
+      if (rf) rf.value = "";
+      if (df) df.value = "";
+      load();
+    });
+
+  // Inline save supprimé (édition via /users/edit)
 
   load();
 })();

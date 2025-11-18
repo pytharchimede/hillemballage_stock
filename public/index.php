@@ -27,6 +27,73 @@ function apiUser(): ?array
     return $uModel->findByToken($token);
 }
 
+function parsePermissions(array $u): array
+{
+    // Admin: tout permis
+    if (($u['role'] ?? '') === 'admin') {
+        return ['*' => ['view' => true, 'edit' => true, 'delete' => true]];
+    }
+    $perms = [];
+    if (!empty($u['permissions'])) {
+        try {
+            $perms = json_decode((string)$u['permissions'], true) ?: [];
+        } catch (\Throwable $e) {
+            $perms = [];
+        }
+    }
+    // Défauts par rôle si non spécifiés
+    $role = $u['role'] ?? '';
+    $defaults = [
+        'gerant' => [
+            'clients' => ['view' => true, 'edit' => true, 'delete' => false],
+            'products' => ['view' => true, 'edit' => false, 'delete' => false],
+            'depots' => ['view' => true, 'edit' => false, 'delete' => false],
+            'stocks' => ['view' => true, 'edit' => true, 'delete' => false],
+            'transfers' => ['view' => true, 'edit' => true, 'delete' => false],
+            'orders' => ['view' => true, 'edit' => true, 'delete' => false],
+            'sales' => ['view' => true, 'edit' => true, 'delete' => false],
+            'users' => ['view' => false, 'edit' => false, 'delete' => false],
+            'reports' => ['view' => true, 'edit' => false, 'delete' => false],
+        ],
+        'livreur' => [
+            'clients' => ['view' => true, 'edit' => true, 'delete' => false],
+            'products' => ['view' => true, 'edit' => false, 'delete' => false],
+            'depots' => ['view' => false, 'edit' => false, 'delete' => false],
+            'stocks' => ['view' => false, 'edit' => false, 'delete' => false],
+            'transfers' => ['view' => false, 'edit' => false, 'delete' => false],
+            'orders' => ['view' => false, 'edit' => false, 'delete' => false],
+            'sales' => ['view' => true, 'edit' => true, 'delete' => false],
+            'users' => ['view' => false, 'edit' => false, 'delete' => false],
+            'reports' => ['view' => false, 'edit' => false, 'delete' => false],
+        ],
+    ];
+    // Merge defaults
+    if (isset($defaults[$role])) {
+        foreach ($defaults[$role] as $ent => $acts) {
+            if (!isset($perms[$ent])) $perms[$ent] = $acts;
+            else $perms[$ent] = array_merge($acts, $perms[$ent]);
+        }
+    }
+    return $perms;
+}
+
+function can(array $u, string $entity, string $action): bool
+{
+    if (($u['role'] ?? '') === 'admin') return true;
+    $perms = parsePermissions($u);
+    if (isset($perms['*'][$action]) && $perms['*'][$action]) return true;
+    return !empty($perms[$entity][$action]);
+}
+
+function requirePermission(array $u, string $entity, string $action)
+{
+    if (!can($u, $entity, $action)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Forbidden', 'entity' => $entity, 'action' => $action]);
+        exit;
+    }
+}
+
 function requireAuth()
 {
     $u = apiUser();
@@ -304,7 +371,8 @@ if (str_starts_with($path, '/api/v1')) {
     }
     // Clients listing (with balance)
     if ($path === '/api/v1/clients' && $_SERVER['REQUEST_METHOD'] === 'GET') {
-        requireAuth();
+        $u = requireAuth();
+        requirePermission($u, 'clients', 'view');
         $rows = DB::query('SELECT c.id,c.name,c.phone,c.address,c.latitude,c.longitude,c.photo_path,c.created_at,
             (SELECT COALESCE(SUM(s.total_amount) - SUM(s.amount_paid), 0) FROM sales s WHERE s.client_id = c.id) AS balance
             FROM clients c ORDER BY c.id DESC');
@@ -314,6 +382,7 @@ if (str_starts_with($path, '/api/v1')) {
     // Create client (supports JSON and multipart)
     if ($path === '/api/v1/clients' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $auth = requireAuth();
+        requirePermission($auth, 'clients', 'edit');
         $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
         $data = [];
         if (stripos($contentType, 'application/json') !== false) {
@@ -338,6 +407,7 @@ if (str_starts_with($path, '/api/v1')) {
     // Update client basic info / photo
     if (preg_match('#^/api/v1/clients/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
         $auth = requireAuth();
+        requirePermission($auth, 'clients', 'edit');
         $id = (int)$m[1];
         // Support JSON or multipart (photo)
         $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
@@ -362,7 +432,8 @@ if (str_starts_with($path, '/api/v1')) {
     }
     // Get single client (with balance)
     if (preg_match('#^/api/v1/clients/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
-        requireAuth();
+        $u = requireAuth();
+        requirePermission($u, 'clients', 'view');
         $id = (int)$m[1];
         $row = DB::query('SELECT c.id,c.name,c.phone,c.address,c.latitude,c.longitude,c.photo_path,c.created_at,
                 (SELECT COALESCE(SUM(s.total_amount) - SUM(s.amount_paid), 0) FROM sales s WHERE s.client_id = c.id) AS balance
@@ -377,7 +448,8 @@ if (str_starts_with($path, '/api/v1')) {
     }
     // Update client geo
     if (preg_match('#^/api/v1/clients/(\d+)/geo$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
-        requireAuth();
+        $auth = requireAuth();
+        requirePermission($auth, 'clients', 'edit');
         $id = (int)$m[1];
         $data = json_decode(file_get_contents('php://input'), true) ?: [];
         DB::execute('UPDATE clients SET latitude=:lat, longitude=:lng, updated_at=NOW() WHERE id=:id', [':lat' => $data['latitude'], ':lng' => $data['longitude'], ':id' => $id]);
@@ -665,11 +737,28 @@ if (str_starts_with($path, '/api/v1')) {
         $u = requireAuth();
         requireRole($u, ['admin']);
         $role = trim($_GET['role'] ?? '');
+        $q = trim($_GET['q'] ?? '');
+        $depotId = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
+        $where = [];
+        $params = [];
         if ($role !== '') {
-            $rows = DB::query('SELECT id,name,email,role,depot_id,created_at FROM users WHERE role = :r ORDER BY id DESC', [':r' => $role]);
-        } else {
-            $rows = DB::query('SELECT id,name,email,role,depot_id,created_at FROM users ORDER BY id DESC');
+            $where[] = 'role = :r';
+            $params[':r'] = $role;
         }
+        if ($depotId !== null) {
+            $where[] = 'depot_id = :d';
+            $params[':d'] = $depotId;
+        }
+        if ($q !== '') {
+            $where[] = '(name LIKE :q OR email LIKE :q)';
+            $params[':q'] = '%' . $q . '%';
+        }
+        $sql = 'SELECT id,name,email,role,depot_id,permissions,created_at FROM users';
+        if ($where) {
+            $sql .= ' WHERE ' . implode(' AND ', $where);
+        }
+        $sql .= ' ORDER BY id DESC';
+        $rows = DB::query($sql, $params);
         echo json_encode($rows);
         exit;
     }
@@ -678,8 +767,22 @@ if (str_starts_with($path, '/api/v1')) {
         requireRole($u, ['admin']);
         $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
         $hash = password_hash($data['password'] ?? 'secret123', PASSWORD_BCRYPT);
-        DB::execute('INSERT INTO users(name,email,password_hash,role,depot_id,created_at) VALUES(:n,:e,:h,:r,:d,NOW())', [':n' => $data['name'] ?? 'User', ':e' => $data['email'] ?? '', ':h' => $hash, ':r' => $data['role'] ?? 'gerant', ':d' => (int)($data['depot_id'] ?? 1)]);
+        $permsJson = isset($data['permissions']) ? json_encode($data['permissions']) : null;
+        DB::execute('INSERT INTO users(name,email,password_hash,role,depot_id,permissions,created_at) VALUES(:n,:e,:h,:r,:d,:p,NOW())', [':n' => $data['name'] ?? 'User', ':e' => $data['email'] ?? '', ':h' => $hash, ':r' => $data['role'] ?? 'gerant', ':d' => (int)($data['depot_id'] ?? 1), ':p' => $permsJson]);
         echo json_encode(['created' => true]);
+        exit;
+    }
+    if (preg_match('#^/api/v1/users/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $u = requireAuth();
+        requireRole($u, ['admin']);
+        $id = (int)$m[1];
+        $row = DB::query('SELECT id,name,email,role,depot_id,permissions,created_at FROM users WHERE id=:id LIMIT 1', [':id' => $id])[0] ?? null;
+        if (!$row) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Not found']);
+            exit;
+        }
+        echo json_encode($row);
         exit;
     }
     if (preg_match('#^/api/v1/users/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
@@ -689,6 +792,10 @@ if (str_starts_with($path, '/api/v1')) {
         $data = json_decode(file_get_contents('php://input'), true) ?: [];
         $sets = ['name=:n', 'email=:e', 'role=:r', 'depot_id=:d'];
         $params = [':n' => $data['name'] ?? null, ':e' => $data['email'] ?? null, ':r' => $data['role'] ?? null, ':d' => (int)($data['depot_id'] ?? 0), ':id' => $id];
+        if (array_key_exists('permissions', $data)) {
+            $sets[] = 'permissions=:p';
+            $params[':p'] = $data['permissions'] !== null ? json_encode($data['permissions']) : null;
+        }
         if (!empty($data['password'])) {
             $sets[] = 'password_hash=:h';
             $params[':h'] = password_hash($data['password'], PASSWORD_BCRYPT);
@@ -967,8 +1074,48 @@ if ($path === '/clients/edit') {
     exit;
 }
 if ($path === '/users') {
+    // Permission: users.view
+    if (!empty($_SESSION['user_id'])) {
+        $uid = (int)$_SESSION['user_id'];
+        $u = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+        if (!$u || !can($u, 'users', 'view')) {
+            http_response_code(403);
+            echo 'Accès refusé';
+            exit;
+        }
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/users.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+if ($path === '/users/new') {
+    if (!empty($_SESSION['user_id'])) {
+        $uid = (int)$_SESSION['user_id'];
+        $u = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+        if (!$u || !can($u, 'users', 'edit')) {
+            http_response_code(403);
+            echo 'Accès refusé';
+            exit;
+        }
+    }
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/users_form.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+if ($path === '/users/edit') {
+    if (!empty($_SESSION['user_id'])) {
+        $uid = (int)$_SESSION['user_id'];
+        $u = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+        if (!$u || !can($u, 'users', 'edit')) {
+            http_response_code(403);
+            echo 'Accès refusé';
+            exit;
+        }
+    }
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/users_form.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }
