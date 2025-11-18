@@ -60,6 +60,37 @@
       return;
     }
     const p = await r.json();
+    // Charger les permissions de l'utilisateur pour savoir si on affiche le bouton Modifier
+    async function fetchMe(tk) {
+      let mr = await fetch(apiUrl("/api/v1/auth/me"), {
+        headers: tk ? { Authorization: "Bearer " + tk } : {},
+      });
+      if (mr.status === 401) {
+        try {
+          const tr = await fetch(apiUrl("/api/v1/auth/session-token"));
+          if (tr.ok) {
+            const tj = await tr.json();
+            if (tj && tj.token) {
+              localStorage.setItem("api_token", tj.token);
+              document.cookie = "api_token=" + tj.token + "; path=/";
+              tk = tj.token;
+              mr = await fetch(apiUrl("/api/v1/auth/me"), {
+                headers: { Authorization: "Bearer " + tk },
+              });
+            }
+          }
+        } catch (e) {}
+      }
+      if (!mr.ok) return null;
+      return mr.json();
+    }
+    const me = await fetchMe(token);
+    const canEdit = !!(
+      me &&
+      me.permissions &&
+      me.permissions.products &&
+      me.permissions.products.edit
+    );
     const src = resolveImg(p.image_path);
     const img = p.image_path
       ? `<img src="${src}" alt="${p.name}" style="max-width:240px;border-radius:8px">`
@@ -85,9 +116,13 @@
               : ""
           }
           <div style="margin-top:1rem; display:flex; gap:.5rem">
-            <a class="btn" href="${apiUrl(
-              "/products/edit?id=" + p.id
-            )}"><i class="fa fa-pencil"></i> Modifier</a>
+            ${
+              canEdit
+                ? `<a class="btn" href="${apiUrl(
+                    "/products/edit?id=" + p.id
+                  )}"><i class=\"fa fa-pencil\"></i> Modifier</a>`
+                : ""
+            }
             <a class="btn secondary" href="${apiUrl(
               "/products"
             )}"><i class="fa fa-arrow-left"></i> Retour</a>
