@@ -581,12 +581,20 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode(DB::query($sql, $p));
         exit;
     }
-    // Products listing
+    // Products listing (optional q search)
     if ($path === '/api/v1/products' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         requireAuth();
-        $rows = DB::query('SELECT p.id,p.name,p.sku,p.unit_price,p.description,p.image_path,p.active, (
-            SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id = p.id
-        ) AS stock_total FROM products p ORDER BY p.id DESC');
+        $q = trim($_GET['q'] ?? '');
+        if ($q !== '') {
+            $like = '%' . $q . '%';
+            $rows = DB::query('SELECT p.id,p.name,p.sku,p.unit_price,p.description,p.image_path,p.active, (
+                SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id = p.id
+            ) AS stock_total FROM products p WHERE p.name LIKE :q OR p.sku LIKE :q ORDER BY p.id DESC', [':q' => $like]);
+        } else {
+            $rows = DB::query('SELECT p.id,p.name,p.sku,p.unit_price,p.description,p.image_path,p.active, (
+                SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id = p.id
+            ) AS stock_total FROM products p ORDER BY p.id DESC');
+        }
         echo json_encode($rows);
         exit;
     }
@@ -833,26 +841,124 @@ if (str_starts_with($path, '/api/v1')) {
         }
         $ref = $data['reference'] ?? strtoupper(substr(md5(uniqid()), 0, 8));
         $supplier = $data['supplier'] ?? null;
+        $status = in_array(($data['status'] ?? 'received'), ['draft', 'ordered', 'received']) ? $data['status'] : 'received';
         $total = 0;
         foreach ($items as $it) {
             $total += ((int)$it['unit_cost'] * (int)$it['quantity']);
         }
-        DB::execute('INSERT INTO orders(reference,supplier,status,total_amount,ordered_at,created_at) VALUES(:r,:s,\'received\',:t,NOW(),NOW())', [':r' => $ref, ':s' => $supplier, ':t' => $total]);
+        DB::execute('INSERT INTO orders(reference,supplier,status,total_amount,ordered_at,created_at) VALUES(:r,:s,:st,:t,NOW(),NOW())', [':r' => $ref, ':s' => $supplier, ':st' => $status, ':t' => $total]);
         $orderId = (int)DB::query('SELECT LAST_INSERT_ID() id')[0]['id'];
         foreach ($items as $it) {
             DB::execute('INSERT INTO order_items(order_id,product_id,quantity,unit_cost,subtotal,created_at) VALUES(:o,:p,:q,:c,:st,NOW())', [':o' => $orderId, ':p' => (int)$it['product_id'], ':q' => (int)$it['quantity'], ':c' => (int)$it['unit_cost'], ':st' => ((int)$it['unit_cost'] * (int)$it['quantity'])]);
-            // Default to depot 1 for now (could be provided in payload later)
-            $depotId = (int)($data['depot_id'] ?? 1);
-            (new StockMovement())->move($depotId, (int)$it['product_id'], 'in', (int)$it['quantity'], date('Y-m-d H:i:s'), null, 'order:' . $ref);
-            Stock::adjust($depotId, (int)$it['product_id'], 'in', (int)$it['quantity']);
+            // Si reçu, on impacte le stock; sinon, on ne touche pas au stock
+            if ($status === 'received') {
+                $depotId = (int)($data['depot_id'] ?? 1);
+                (new StockMovement())->move($depotId, (int)$it['product_id'], 'in', (int)$it['quantity'], date('Y-m-d H:i:s'), null, 'order:' . $ref);
+                Stock::adjust($depotId, (int)$it['product_id'], 'in', (int)$it['quantity']);
+            }
         }
-        echo json_encode(['order_id' => $orderId, 'reference' => $ref]);
+        echo json_encode(['order_id' => $orderId, 'reference' => $ref, 'status' => $status]);
         exit;
     }
     if ($path === '/api/v1/orders' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         requireAuth();
-        $rows = DB::query('SELECT id,reference,supplier,status,total_amount,ordered_at FROM orders ORDER BY ordered_at DESC LIMIT 200');
+        $where = [];
+        $params = [];
+        $status = trim($_GET['status'] ?? '');
+        if ($status !== '' && in_array($status, ['draft', 'ordered', 'received'])) {
+            $where[] = 'status = :st';
+            $params[':st'] = $status;
+        }
+        $q = trim($_GET['q'] ?? '');
+        if ($q !== '') {
+            $where[] = '(reference LIKE :q OR supplier LIKE :q)';
+            $params[':q'] = '%' . $q . '%';
+        }
+        $sql = 'SELECT id,reference,supplier,status,total_amount,ordered_at FROM orders';
+        if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
+        $sql .= ' ORDER BY ordered_at DESC LIMIT 200';
+        $rows = DB::query($sql, $params);
         echo json_encode($rows);
+        exit;
+    }
+    // Mark order as received (apply stock adjustments)
+    if (preg_match('#^/api/v1/orders/(\d+)/receive$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
+        $u = requireAuth();
+        requireRole($u, ['admin', 'gerant']);
+        $id = (int)$m[1];
+        $data = json_decode(file_get_contents('php://input'), true) ?: [];
+        $depotId = (int)($data['depot_id'] ?? 0);
+        if ($depotId <= 0) {
+            http_response_code(422);
+            echo json_encode(['error' => 'depot_id requis']);
+            exit;
+        }
+        $ord = DB::query('SELECT id,reference,status FROM orders WHERE id=:id LIMIT 1', [':id' => $id])[0] ?? null;
+        if (!$ord) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Not found']);
+            exit;
+        }
+        if (($ord['status'] ?? '') === 'received') {
+            http_response_code(409);
+            echo json_encode(['error' => 'Déjà reçu']);
+            exit;
+        }
+        // Fetch items
+        $items = DB::query('SELECT product_id, quantity, unit_cost FROM order_items WHERE order_id=:o', [':o' => $id]);
+        // Apply stock movements
+        $ref = (string)$ord['reference'];
+        foreach ($items as $it) {
+            $pid = (int)$it['product_id'];
+            $qty = (int)$it['quantity'];
+            if ($qty > 0) {
+                (new StockMovement())->move($depotId, $pid, 'in', $qty, date('Y-m-d H:i:s'), null, 'order:' . $ref);
+                Stock::adjust($depotId, $pid, 'in', $qty);
+            }
+        }
+        DB::execute('UPDATE orders SET status="received", ordered_at=NOW(), updated_at=NOW() WHERE id=:id', [':id' => $id]);
+        echo json_encode(['received' => true, 'id' => $id]);
+        exit;
+    }
+    // Get single order with items
+    if (preg_match('#^/api/v1/orders/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        requireAuth();
+        $id = (int)$m[1];
+        $ord = DB::query('SELECT id,reference,supplier,status,total_amount,ordered_at,created_at FROM orders WHERE id=:id LIMIT 1', [':id' => $id])[0] ?? null;
+        if (!$ord) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Not found']);
+            exit;
+        }
+        $items = DB::query('SELECT oi.product_id, p.name AS product_name, oi.quantity, oi.unit_cost, oi.subtotal FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=:o', [':o' => $id]);
+        echo json_encode(['order' => $ord, 'items' => $items]);
+        exit;
+    }
+    // Proposed order items based on current stock vs target
+    if ($path === '/api/v1/orders/proposals' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        requireAuth();
+        $target = max(0, (int)($_GET['target'] ?? 10));
+        $depotId = isset($_GET['depot_id']) ? (int)$_GET['depot_id'] : null;
+        // Current stock per product (global or per depot)
+        if ($depotId) {
+            $rows = DB::query('SELECT p.id, p.name, p.sku, p.unit_price, COALESCE(s.quantity,0) AS qty FROM products p LEFT JOIN stocks s ON s.product_id=p.id AND s.depot_id=:d ORDER BY p.name ASC', [':d' => $depotId]);
+        } else {
+            $rows = DB::query('SELECT p.id, p.name, p.sku, p.unit_price, (SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id=p.id) AS qty FROM products p ORDER BY p.name ASC');
+        }
+        $items = [];
+        foreach ($rows as $r) {
+            $need = $target - (int)$r['qty'];
+            if ($need > 0) {
+                $items[] = [
+                    'product_id' => (int)$r['id'],
+                    'product_name' => $r['name'],
+                    'current_stock' => (int)$r['qty'],
+                    'suggested_qty' => $need,
+                    'unit_cost' => (int)$r['unit_price'],
+                ];
+            }
+        }
+        echo json_encode(['target' => $target, 'depot_id' => $depotId, 'items' => $items]);
         exit;
     }
     // Stock transfer endpoint
@@ -1157,6 +1263,59 @@ if ($path === '/orders') {
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/orders.php';
     include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+// Orders new form
+if ($path === '/orders/new') {
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/orders_form.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+// Order view/export
+if ($path === '/orders/export') {
+    // export one order as PDF via TCPDF
+    $id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+    if ($id <= 0) {
+        http_response_code(422);
+        echo 'ID manquant';
+        exit;
+    }
+    $ord = DB::query('SELECT id,reference,supplier,status,total_amount,ordered_at,created_at FROM orders WHERE id=:id LIMIT 1', [':id' => $id])[0] ?? null;
+    if (!$ord) {
+        http_response_code(404);
+        echo 'Commande introuvable';
+        exit;
+    }
+    $items = DB::query('SELECT oi.product_id, p.name AS product_name, oi.quantity, oi.unit_cost, oi.subtotal FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=:o', [':o' => $id]);
+    if (!class_exists('TCPDF')) {
+        // Attempt to load if installed
+        try {
+            @include_once __DIR__ . '/../vendor/tecnickcom/tcpdf/tcpdf.php';
+        } catch (\Throwable $e) {
+        }
+    }
+    if (!class_exists('TCPDF')) {
+        http_response_code(500);
+        echo 'TCPDF non installé. Installez avec: composer require tecnickcom/tcpdf';
+        exit;
+    }
+    $pdf = new \TCPDF();
+    $pdf->SetCreator('Hill Stock');
+    $pdf->SetAuthor('Hill');
+    $pdf->SetTitle('Bon de commande ' . $ord['reference']);
+    $pdf->AddPage();
+    $html = '<h1 style="font-size:18px;">Bon de commande ' . htmlspecialchars($ord['reference']) . '</h1>';
+    $html .= '<div>Fournisseur: ' . htmlspecialchars((string)$ord['supplier']) . '</div>';
+    $html .= '<div>Status: ' . htmlspecialchars((string)$ord['status']) . '</div>';
+    $html .= '<div>Date: ' . htmlspecialchars((string)$ord['ordered_at']) . '</div>';
+    $html .= '<br /><table border="1" cellpadding="6"><thead><tr><th>Produit</th><th>Qté</th><th>PU</th><th>Sous-total</th></tr></thead><tbody>';
+    foreach ($items as $it) {
+        $html .= '<tr><td>' . htmlspecialchars($it['product_name']) . '</td><td align="right">' . (int)$it['quantity'] . '</td><td align="right">' . (int)$it['unit_cost'] . '</td><td align="right">' . (int)$it['subtotal'] . '</td></tr>';
+    }
+    $html .= '</tbody></table><br /><h3>Total: ' . (int)$ord['total_amount'] . '</h3>';
+    $pdf->writeHTML($html, true, false, true, false, '');
+    $pdf->Output('bon_' . $ord['reference'] . '.pdf', 'I');
     exit;
 }
 

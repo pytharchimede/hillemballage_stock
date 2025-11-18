@@ -3,7 +3,8 @@
   "description": "Application de gestion des stocks et ventes (PHP brut)",
   "type": "project",
   "require": {
-    "php": ">=8.0"
+    "php": ">=8.0",
+    "tecnickcom/tcpdf": "^6.10"
   },
   "autoload": {
     "psr-4": {
