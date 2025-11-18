@@ -1812,7 +1812,8 @@ if (str_starts_with($path, '/api/v1')) {
                 // Initialiser avec le prix de vente si coût inconnu
                 DB::execute('UPDATE products SET cost_price = unit_price WHERE cost_price = 0');
             }
-        } catch (\Throwable $e) { /* ignore */ }
+        } catch (\Throwable $e) { /* ignore */
+        }
         // Scope stock (admin can pick depot, manager fixed to own depot)
         $stockWhere = [];
         $stockParams = [];
@@ -1884,7 +1885,8 @@ if (str_starts_with($path, '/api/v1')) {
                 DB::execute('ALTER TABLE products ADD COLUMN cost_price INT NOT NULL DEFAULT 0 AFTER unit_price');
                 DB::execute('UPDATE products SET cost_price = unit_price WHERE cost_price = 0');
             }
-        } catch (\Throwable $e) { /* ignore */ }
+        } catch (\Throwable $e) { /* ignore */
+        }
         $stockWhere = [];
         $stockParams = [];
         if ($role === 'admin') {
@@ -1976,7 +1978,7 @@ if (str_starts_with($path, '/api/v1')) {
                 DB::execute('ALTER TABLE products ADD COLUMN cost_price INT NOT NULL DEFAULT 0 AFTER unit_price');
                 DB::execute('UPDATE products SET cost_price = unit_price WHERE cost_price = 0');
             }
-        } catch (\Throwable $e) { /* ignore */ }
+        } catch (\Throwable $e) { /* ignore */
         }
         $stockWhere = [];
         $stockParams = [];
@@ -2749,6 +2751,13 @@ if (str_starts_with($path, '/api/v1')) {
 
         // Data
         $stockTotal = (int)(DB::query('SELECT COALESCE(SUM(quantity),0) qty FROM stocks s' . ($stockScopeSql ? $stockScopeSql : ''))[0]['qty'] ?? 0);
+        // Try to compute stock valuation; fall back to 0 if column missing
+        $stockValuation = 0;
+        try {
+            $rowVal = DB::query('SELECT COALESCE(SUM(s.quantity * p.cost_price),0) v FROM stocks s JOIN products p ON p.id=s.product_id' . ($stockScopeSql ? $stockScopeSql : ''))[0] ?? null;
+            if ($rowVal) $stockValuation = (int)$rowVal['v'];
+        } catch (\Throwable $e) {
+        }
         $topBalances = DB::query('SELECT c.id, c.name, (SUM(s.total_amount) - SUM(s.amount_paid)) AS balance FROM sales s JOIN clients c ON c.id = s.client_id' . $salesScopeSql . ' GROUP BY c.id,c.name HAVING balance > 0 ORDER BY balance DESC LIMIT 5', $salesParams);
         $today = date('Y-m-d');
         $dailyDepot = $userDepotId > 0 ? $userDepotId : 1;
@@ -2874,13 +2883,13 @@ if (str_starts_with($path, '/api/v1')) {
         $html .= '</tbody></table>';
         $pdf->writeHTML($html, true, false, true, false, '');
         $pdf->Output('dashboard.pdf', 'I');
-        // Audit export
         try {
             audit_log((int)$auth['id'], 'export', 'dashboard', null, $path, 'GET', ['days' => $days, 'depot' => $paramDepot, 'threshold' => $threshold]);
         } catch (\Throwable $e) {
         }
         exit;
     }
+    // API fallback 404
     http_response_code(404);
     echo json_encode(['error' => 'Not found']);
     exit;
