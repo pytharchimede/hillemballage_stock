@@ -1813,7 +1813,6 @@ if (str_starts_with($path, '/api/v1')) {
                 DB::execute('UPDATE products SET cost_price = unit_price WHERE cost_price = 0');
             }
         } catch (\Throwable $e) { /* ignore */ }
-        }
         // Scope stock (admin can pick depot, manager fixed to own depot)
         $stockWhere = [];
         $stockParams = [];
@@ -1886,7 +1885,6 @@ if (str_starts_with($path, '/api/v1')) {
                 DB::execute('UPDATE products SET cost_price = unit_price WHERE cost_price = 0');
             }
         } catch (\Throwable $e) { /* ignore */ }
-        }
         $stockWhere = [];
         $stockParams = [];
         if ($role === 'admin') {
