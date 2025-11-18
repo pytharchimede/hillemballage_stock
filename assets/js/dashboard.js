@@ -196,6 +196,8 @@
     toggle("card-orders", !!v.orders);
     // Users
     toggle("card-users", !!v.users);
+    // Top products: visible si finance ou orders (recettes/commandes)
+    toggle("card-top-products", !!(v.finance || v.orders));
   }
 
   function renderRevenue30(points) {

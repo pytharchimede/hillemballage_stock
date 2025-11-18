@@ -1323,21 +1323,21 @@ if (str_starts_with($path, '/api/v1')) {
                 try {
                     return can($auth, 'clients', 'view');
                 } catch (\Throwable $e) {
-                    return true;
+                    return false;
                 }
             })(),
             'stocks' => (function () use ($auth) {
                 try {
-                    return can($auth, 'products', 'view');
+                    return can($auth, 'stocks', 'view');
                 } catch (\Throwable $e) {
-                    return true;
+                    return false;
                 }
             })(),
             'orders' => (function () use ($auth) {
                 try {
                     return can($auth, 'orders', 'view');
                 } catch (\Throwable $e) {
-                    return true;
+                    return false;
                 }
             })(),
             'users' => (function () use ($auth) {

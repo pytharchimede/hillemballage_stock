@@ -1,3 +1,19 @@
+<style>
+    /* Éviter le flash : masquer par défaut les blocs soumis aux permissions */
+    #kpi-receivables,
+    #block-revenue,
+    #kpi-cash-today,
+    #kpi-collections-today,
+    #kpi-stock,
+    #kpi-stock-valuation,
+    #card-low-stock,
+    #card-clients,
+    #card-orders,
+    #card-users,
+    #card-top-products {
+        display: none;
+    }
+</style>
 <h1 style="margin-bottom:8px">Tableau de bord</h1>
 
 <div class="toolbar" id="dash-filters" style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
