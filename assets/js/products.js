@@ -64,26 +64,32 @@
         role === "admin" || role === "gerant" ? "flex" : "none";
     }
     if (elDepot && (role === "admin" || role === "gerant")) {
-      const depots = await fetchDepots();
-      elDepot.innerHTML = "";
-      const optAll = document.createElement("option");
-      optAll.value = "";
-      optAll.textContent = "Tous les dépôts";
-      elDepot.appendChild(optAll);
-      (depots || []).forEach((d) => {
-        const o = document.createElement("option");
-        o.value = d.id;
-        o.textContent = d.name + (d.code ? " (" + d.code + ")" : "");
-        elDepot.appendChild(o);
-      });
+      if (!elDepot._loaded) {
+        const depots = await fetchDepots();
+        elDepot.innerHTML = "";
+        const optAll = document.createElement("option");
+        optAll.value = "";
+        optAll.textContent = "Tous les dépôts";
+        elDepot.appendChild(optAll);
+        (depots || []).forEach((d) => {
+          const o = document.createElement("option");
+          o.value = d.id;
+          o.textContent = d.name + (d.code ? " (" + d.code + ")" : "");
+          elDepot.appendChild(o);
+        });
+        elDepot._loaded = true;
+      }
       if (elDepotFilter && !elDepotFilter._bind) {
         elDepotFilter._bind = true;
         elDepotFilter.addEventListener("input", function () {
           const qf = (elDepotFilter.value || "").toLowerCase().trim();
           for (let i = 0; i < elDepot.options.length; i++) {
             const t = (elDepot.options[i].text || "").toLowerCase();
+            const isSelected =
+              elDepot.options[i].value === (elDepot.value || "");
+            // Ne pas masquer l'option sélectionnée même si elle ne matche pas le filtre
             elDepot.options[i].style.display =
-              qf && !t.includes(qf) ? "none" : "";
+              qf && !t.includes(qf) && !isSelected ? "none" : "";
           }
         });
       }
@@ -252,10 +258,11 @@
     function openExport(fmt) {
       let base = apiUrl("/api/v1/products/export");
       const q = [];
-      if (f.q) q.push("q=" + encodeURIComponent(f.q));
-      if (f.depot_id !== "")
-        q.push("depot_id=" + encodeURIComponent(f.depot_id));
-      if (f.only_in_stock) q.push("only_in_stock=1");
+      const ff = currentFilters();
+      if (ff.q) q.push("q=" + encodeURIComponent(ff.q));
+      if (ff.depot_id !== "")
+        q.push("depot_id=" + encodeURIComponent(ff.depot_id));
+      if (ff.only_in_stock) q.push("only_in_stock=1");
       q.push("format=" + encodeURIComponent(fmt));
       const t = localStorage.getItem("api_token") || readCookieToken() || "";
       if (t) q.push("api_token=" + encodeURIComponent(t));
