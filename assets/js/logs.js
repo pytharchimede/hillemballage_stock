@@ -43,6 +43,7 @@
     btnSearch: document.getElementById("btn-log-search"),
     btnReset: document.getElementById("btn-log-reset"),
     btnExport: document.getElementById("btn-log-export"),
+    btnExportPdf: document.getElementById("btn-log-export-pdf"),
     grid: document.getElementById("logs-grid"),
     empty: document.getElementById("logs-empty"),
     prev: document.getElementById("logs-prev"),
@@ -195,6 +196,18 @@
       let token = localStorage.getItem("api_token") || readCookieToken() || "";
       const qs = paramsToQuery();
       let url = routeBase + "/api/v1/audit-logs/export" + (qs ? "?" + qs : "");
+      url +=
+        (url.indexOf("?") > -1 ? "&" : "?") +
+        (token ? "api_token=" + encodeURIComponent(token) : "");
+      window.open(url, "_blank");
+    });
+
+  if (els.btnExportPdf)
+    els.btnExportPdf.addEventListener("click", function () {
+      let token = localStorage.getItem("api_token") || readCookieToken() || "";
+      const qs = paramsToQuery();
+      let url =
+        routeBase + "/api/v1/audit-logs/export-pdf" + (qs ? "?" + qs : "");
       url +=
         (url.indexOf("?") > -1 ? "&" : "?") +
         (token ? "api_token=" + encodeURIComponent(token) : "");

@@ -1587,6 +1587,105 @@ if (str_starts_with($path, '/api/v1')) {
         fclose($out);
         exit;
     }
+    if ($path === '/api/v1/audit-logs/export-pdf' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $u = requireAuth();
+        requireRole($u, ['admin']);
+        ensure_audit_table();
+        // Charger TCPDF si nécessaire
+        if (!class_exists('TCPDF')) {
+            try {
+                @include_once __DIR__ . '/../vendor/tecnickcom/tcpdf/tcpdf.php';
+            } catch (\Throwable $e) {
+            }
+        }
+        if (!class_exists('TCPDF')) {
+            http_response_code(500);
+            echo 'TCPDF non installé. Installez avec: composer require tecnickcom/tcpdf';
+            exit;
+        }
+        $where = [];
+        $params = [];
+        $action = trim($_GET['action'] ?? '');
+        $entity = trim($_GET['entity'] ?? '');
+        $userId = isset($_GET['user_id']) && $_GET['user_id'] !== '' ? (int)$_GET['user_id'] : null;
+        $from = trim($_GET['from'] ?? '');
+        $to = trim($_GET['to'] ?? '');
+        $q = trim($_GET['q'] ?? '');
+        $limit = (int)($_GET['limit'] ?? 1000);
+        if ($limit <= 0 || $limit > 2000) $limit = 1000;
+        if ($action !== '') {
+            $where[] = 'al.action = :ac';
+            $params[':ac'] = $action;
+        }
+        if ($entity !== '') {
+            $where[] = 'al.entity = :en';
+            $params[':en'] = $entity;
+        }
+        if ($userId !== null) {
+            $where[] = 'al.actor_user_id = :uid';
+            $params[':uid'] = $userId;
+        }
+        if ($from !== '') {
+            $where[] = 'al.created_at >= :from';
+            $params[':from'] = $from . ' 00:00:00';
+        }
+        if ($to !== '') {
+            $where[] = 'al.created_at <= :to';
+            $params[':to'] = $to . ' 23:59:59';
+        }
+        if ($q !== '') {
+            $where[] = '(al.route LIKE :q OR al.entity LIKE :q OR al.action LIKE :q OR u.name LIKE :q)';
+            $params[':q'] = '%' . $q . '%';
+        }
+        $sql = 'SELECT al.id, al.actor_user_id, u.name AS actor_name, al.action, al.entity, al.entity_id, al.route, al.method, al.ip, al.user_agent, al.created_at '
+            . 'FROM audit_logs al LEFT JOIN users u ON u.id = al.actor_user_id';
+        if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
+        $sql .= ' ORDER BY al.id DESC LIMIT ' . $limit;
+        $rows = DB::query($sql, $params);
+
+        // Audit explicite export
+        try {
+            audit_log((int)$u['id'], 'export', 'audit_logs', null, $path, 'GET');
+        } catch (\Throwable $e) {
+        }
+
+        $pdf = new \TCPDF('L', 'mm', 'A4');
+        $pdf->SetCreator('Hill Stock');
+        $pdf->SetAuthor('Hill Stock');
+        $pdf->SetTitle('Audit logs');
+        $pdf->AddPage();
+        $html = '<h2 style="font-size:16px;margin:0 0 6px">Journal d\'audit</h2>';
+        $html .= '<div style="font-size:10px;color:#666">Généré le ' . htmlspecialchars(date('Y-m-d H:i')) . '</div>';
+        $html .= '<br />';
+        $html .= '<table border="1" cellpadding="4" cellspacing="0"><thead><tr style="background:#f2f2f2;font-weight:bold">'
+            . '<th width="5%">ID</th>'
+            . '<th width="15%">Utilisateur</th>'
+            . '<th width="10%">Action</th>'
+            . '<th width="12%">Entité</th>'
+            . '<th width="8%">Entité ID</th>'
+            . '<th width="25%">Route</th>'
+            . '<th width="7%">Méthode</th>'
+            . '<th width="8%">IP</th>'
+            . '<th width="10%">Date</th>'
+            . '</tr></thead><tbody>';
+        foreach ($rows as $r) {
+            $html .= '<tr>'
+                . '<td>' . (int)$r['id'] . '</td>'
+                . '<td>' . htmlspecialchars(($r['actor_name'] ?? '') !== '' ? $r['actor_name'] : ('#' . (string)($r['actor_user_id'] ?? ''))) . '</td>'
+                . '<td>' . htmlspecialchars((string)$r['action']) . '</td>'
+                . '<td>' . htmlspecialchars((string)($r['entity'] ?? '')) . '</td>'
+                . '<td>' . htmlspecialchars((string)($r['entity_id'] ?? '')) . '</td>'
+                . '<td>' . htmlspecialchars((string)$r['route']) . '</td>'
+                . '<td>' . htmlspecialchars((string)$r['method']) . '</td>'
+                . '<td>' . htmlspecialchars((string)($r['ip'] ?? '')) . '</td>'
+                . '<td>' . htmlspecialchars((string)$r['created_at']) . '</td>'
+                . '</tr>';
+        }
+        $html .= '</tbody></table>';
+        $pdf->writeHTML($html, true, false, true, false, '');
+        $pdf->Output('audit_logs.pdf', 'I');
+        exit;
+    }
     http_response_code(404);
     echo json_encode(['error' => 'Not found']);
     exit;

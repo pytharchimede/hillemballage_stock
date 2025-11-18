@@ -65,6 +65,7 @@ $assetBase = preg_replace('#/public$#', '', $scriptDir);
             <button id="btn-log-search" class="btn small"><i class="fa fa-search"></i> Rechercher</button>
             <button id="btn-log-reset" class="btn small btn-ghost"><i class="fa fa-eraser"></i> Réinitialiser</button>
             <button id="btn-log-export" class="btn small btn-outline-main"><i class="fa fa-file-export"></i> Export CSV</button>
+            <button id="btn-log-export-pdf" class="btn small btn-outline-main"><i class="fa fa-file-pdf"></i> Export PDF</button>
         </div>
     </div>
 
