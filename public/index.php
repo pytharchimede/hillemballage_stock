@@ -958,51 +958,84 @@ if (str_starts_with($path, '/api/v1')) {
             echo json_encode(['error' => 'Not found']);
             exit;
         }
-        // Génération mot de passe fort
-        $alphabet = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789@$!%*?&';
-        $pw = '';
-        $hash = '';
-        for ($i = 0; $i < 12; $i++) {
-            $pw .= $alphabet[random_int(0, strlen($alphabet) - 1)];
-        }
-        $hash = password_hash($pw, PASSWORD_BCRYPT);
-        // Assurer table log
         try {
-            DB::execute('CREATE TABLE IF NOT EXISTS user_password_resets (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, user_id INT UNSIGNED NOT NULL, admin_id INT UNSIGNED NOT NULL, password_hash VARCHAR(255) NOT NULL, password_mask VARCHAR(60) NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, KEY upr_user_fk(user_id), KEY upr_admin_fk(admin_id)) ENGINE=InnoDB');
+            // Génération mot de passe fort (12 caractères)
+            $alphabet = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789@$!%*?&';
+            $pw = '';
+            for ($i = 0; $i < 12; $i++) {
+                $pw .= $alphabet[random_int(0, strlen($alphabet) - 1)];
+            }
+            $hash = password_hash($pw, PASSWORD_BCRYPT);
+
+            // Assurer table de log
+            DB::execute('CREATE TABLE IF NOT EXISTS user_password_resets (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                user_id INT UNSIGNED NOT NULL,
+                admin_id INT UNSIGNED NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                password_mask VARCHAR(60) NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                KEY upr_user_fk(user_id),
+                KEY upr_admin_fk(admin_id)
+            ) ENGINE=InnoDB');
+
+            // Mettre à jour le mot de passe utilisateur
+            DB::execute('UPDATE users SET password_hash=:h, updated_at=NOW() WHERE id=:id', [':h' => $hash, ':id' => $id]);
+
+            // Enregistrer le log avec un mask (ex: ab********YZ)
+            $mask = substr($pw, 0, 2) . str_repeat('*', max(0, strlen($pw) - 4)) . substr($pw, -2);
+            DB::execute(
+                'INSERT INTO user_password_resets(user_id,admin_id,password_hash,password_mask,created_at) VALUES(:u,:a,:ph,:pm,NOW())',
+                [':u' => $id, ':a' => (int)$u['id'], ':ph' => $hash, ':pm' => $mask]
+            );
+            $logId = (int)(DB::query('SELECT LAST_INSERT_ID() id')[0]['id'] ?? 0);
+
+            echo json_encode(['reset' => true, 'password' => $pw, 'log_id' => $logId, 'mask' => $mask]);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            echo json_encode(['error' => 'RESET_FAILED', 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+
+    // Listing des logs de réinitialisation (admin)
+    if ($path === '/api/v1/users/reset-logs' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $u = requireAuth();
+        requireRole($u, ['admin']);
+        $userId = isset($_GET['user_id']) && $_GET['user_id'] !== '' ? (int)$_GET['user_id'] : null;
+        // Assurer table pour éviter erreurs en prod
+        try {
+            DB::execute('CREATE TABLE IF NOT EXISTS user_password_resets (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                user_id INT UNSIGNED NOT NULL,
+                admin_id INT UNSIGNED NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                password_mask VARCHAR(60) NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                KEY upr_user_fk(user_id),
+                KEY upr_admin_fk(admin_id)
+            ) ENGINE=InnoDB');
         } catch (\Throwable $e) { /* ignore */
         }
-        $mask = substr($pw, 0, 2) . str_repeat('*', max(0, strlen($pw) - 4)) . substr($pw, -2); // ex: ab********YZ
-        DB::execute('INSERT INTO user_password_resets(user_id,admin_id,password_hash,password_mask,created_at) VALUES(:u,:a,:ph,:pm,NOW())', [':u' => $id, ':a' => (int)$u['id'], ':ph' => $hash, ':pm' => $mask]);
-        $logId = (int)DB::query('SELECT LAST_INSERT_ID() id')[0]['id'];
-        echo json_encode(['reset' => true, 'password' => $pw, 'log_id' => $logId, 'mask' => $mask]);
-        for ($i = 0; $i < 12; $i++) {
-            $pw .= $alphabet[random_int(0, strlen($alphabet) - 1)];
-            // Listing des logs de réinitialisation
-            if ($path === '/api/v1/users/reset-logs' && $_SERVER['REQUEST_METHOD'] === 'GET') {
-                $u = requireAuth();
-                requireRole($u, ['admin']);
-                $userId = isset($_GET['user_id']) && $_GET['user_id'] !== '' ? (int)$_GET['user_id'] : null;
-                $where = [];
-                $params = [];
-                if ($userId !== null) {
-                    $where[] = 'upr.user_id=:uid';
-                    $params[':uid'] = $userId;
-                }
-                $sql = 'SELECT upr.id,upr.user_id,upr.admin_id,upr.password_mask,upr.created_at, u.name AS user_name, a.name AS admin_name FROM user_password_resets upr JOIN users u ON u.id=upr.user_id JOIN users a ON a.id=upr.admin_id';
-                if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
-                $sql .= ' ORDER BY upr.id DESC LIMIT 200';
-                try {
-                    $rows = DB::query($sql, $params);
-                } catch (\Throwable $e) {
-                    $rows = [];
-                }
-                echo json_encode($rows);
-                exit;
-            }
+
+        $where = [];
+        $params = [];
+        if ($userId !== null) {
+            $where[] = 'upr.user_id=:uid';
+            $params[':uid'] = $userId;
         }
-        $hash = password_hash($pw, PASSWORD_BCRYPT);
-        DB::execute('UPDATE users SET password_hash=:h, updated_at=NOW() WHERE id=:id', [':h' => $hash, ':id' => $id]);
-        echo json_encode(['reset' => true, 'password' => $pw]);
+        $sql = 'SELECT upr.id,upr.user_id,upr.admin_id,upr.password_mask,upr.created_at, u.name AS user_name, a.name AS admin_name '
+            . 'FROM user_password_resets upr '
+            . 'JOIN users u ON u.id=upr.user_id '
+            . 'JOIN users a ON a.id=upr.admin_id';
+        if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
+        $sql .= ' ORDER BY upr.id DESC LIMIT 200';
+        try {
+            $rows = DB::query($sql, $params);
+        } catch (\Throwable $e) {
+            $rows = [];
+        }
+        echo json_encode($rows);
         exit;
     }
     // Désactivation utilisateur rapide
