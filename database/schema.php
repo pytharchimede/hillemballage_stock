@@ -152,4 +152,16 @@ return [
         ],
         'indexes' => ['PRIMARY KEY (`id`)', 'KEY `order_items_order_fk` (`order_id`)', 'KEY `order_items_product_fk` (`product_id`)']
     ],
+    // Logs de réinitialisation de mot de passe (ne stocke pas le mot de passe en clair)
+    'user_password_resets' => [
+        'columns' => [
+            'id' => ['type' => 'int', 'unsigned' => true, 'extra' => 'AUTO_INCREMENT'],
+            'user_id' => ['type' => 'int', 'unsigned' => true],
+            'admin_id' => ['type' => 'int', 'unsigned' => true],
+            'password_hash' => ['type' => 'varchar', 'length' => 255],
+            'password_mask' => ['type' => 'varchar', 'length' => 60],
+            'created_at' => ['type' => 'datetime', 'default' => 'CURRENT_TIMESTAMP'],
+        ],
+        'indexes' => ['PRIMARY KEY (`id`)', 'KEY `upr_user_fk` (`user_id`)', 'KEY `upr_admin_fk` (`admin_id`)']
+    ],
 ];

@@ -3,7 +3,7 @@ $scriptDir = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'])), '/'
 $assetBase = preg_replace('#/public$#', '', $scriptDir);
 ?>
 <h1 style="display:flex;align-items:center;justify-content:space-between;gap:1rem">
-    <span>Utilisateurs</span>
+    <span style="display:flex;align-items:center;gap:.75rem">Utilisateurs <button type="button" id="btn-show-reset-log" class="btn secondary" style="font-size:.75rem"><i class="fa fa-history"></i> Journal des resets</button></span>
     <a class="btn" href="<?= $scriptDir ?>/users/new"><i class="fa fa-user-plus"></i> Nouvel utilisateur</a>
 </h1>
 <section class="card">
@@ -56,6 +56,62 @@ $assetBase = preg_replace('#/public$#', '', $scriptDir);
         <tbody></tbody>
     </table>
 </section>
+<div id="pw-reset-modal" class="modal" style="display:none;position:fixed;inset:0;z-index:400;align-items:center;justify-content:center;background:rgba(0,0,0,.45)">
+    <div class="modal-content" style="background:#fff;border-radius:12px;max-width:420px;width:100%;padding:1.25rem;box-shadow:0 6px 24px rgba(0,0,0,.25);">
+        <h3 style="margin-top:0;display:flex;align-items:center;gap:.5rem"><i class="fa fa-key"></i> Nouveau mot de passe</h3>
+        <p style="font-size:.9rem" class="muted">Copiez ce mot de passe et transmettez-le de manière sécurisée. Il ne sera plus affiché après fermeture.</p>
+        <div style="display:flex;gap:.5rem;align-items:center;margin:.75rem 0">
+            <input id="pw-reset-value" type="text" readonly class="form-control" style="flex:1;font-weight:bold" />
+            <button id="pw-reset-copy" class="btn" type="button"><i class="fa fa-copy"></i></button>
+        </div>
+        <div id="pw-reset-mask" class="muted" style="font-size:.75rem"></div>
+        <div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1rem">
+            <button id="pw-reset-close" class="btn secondary" type="button"><i class="fa fa-times"></i> Fermer</button>
+        </div>
+    </div>
+</div>
+<div id="pw-log-modal" class="modal" style="display:none;position:fixed;inset:0;z-index:401;align-items:center;justify-content:center;background:rgba(0,0,0,.45)">
+    <div class="modal-content" style="background:#fff;border-radius:12px;max-width:680px;width:100%;padding:1.25rem;box-shadow:0 6px 24px rgba(0,0,0,.25);">
+        <h3 style="margin-top:0;display:flex;align-items:center;gap:.5rem"><i class="fa fa-history"></i> Journal des réinitialisations</h3>
+        <div id="pw-log-body" style="max-height:360px;overflow:auto;border:1px solid #eee;border-radius:8px"></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:.75rem">
+            <small class="muted">Dernières opérations (limite 200). Les mots de passe affichés sont masqués.</small>
+            <button id="pw-log-close" class="btn secondary" type="button"><i class="fa fa-times"></i> Fermer</button>
+        </div>
+    </div>
+</div>
+<style>
+    .pw-log-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: .75rem;
+    }
+
+    .pw-log-table th {
+        background: #f5f5f5;
+        position: sticky;
+        top: 0;
+        font-weight: 600;
+    }
+
+    .pw-log-table th,
+    .pw-log-table td {
+        padding: .4rem .55rem;
+        border-bottom: 1px solid #eee;
+        text-align: left;
+    }
+
+    .pw-log-table tr:hover {
+        background: #fafafa;
+    }
+</style>
+<script>
+    window.SHOW_PW_LOG = function() {
+        const m = document.getElementById('pw-log-modal');
+        if (m) m.style.display = 'flex';
+        window.LOAD_PW_LOG && window.LOAD_PW_LOG();
+    };
+</script>
 <script>
     window.ROUTE_BASE = "<?= $scriptDir ?>";
 </script>

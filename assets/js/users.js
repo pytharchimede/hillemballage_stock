@@ -76,6 +76,12 @@
               u.photo_path
             )}');"></div>`
           : `<div class="avatar avatar-fallback"><i class="fa fa-user"></i></div>`;
+        let resetInfo = "";
+        if (u.last_reset_at) {
+          resetInfo = `<span class="badge" title="Dernière réinitialisation">🔑 ${escapeHtml(
+            formatRelative(u.last_reset_at)
+          )}</span>`;
+        }
         return `
         <div class="card-client" data-id="${u.id}">
           <div class="cl-header">${photo}</div>
@@ -84,7 +90,7 @@
             <div class="cl-phone"><i class="fa fa-envelope"></i> ${escapeHtml(
               u.email || ""
             )}</div>
-            <div class="cl-balance">${roleBadge} · ${dlabel} · ${activeBadge}</div>
+            <div class="cl-balance">${roleBadge} · ${dlabel} · ${activeBadge} ${resetInfo}</div>
           </div>
           <div class="cl-actions">
             <a class="btn" href="${routeBase}/users/edit?id=${u.id}" title="Modifier"><i class="fa fa-pencil"></i></a>
@@ -287,10 +293,124 @@
     }
     try {
       const j = await r.json();
-      if (j.password) alert("Nouveau mot de passe: " + j.password);
-      else alert("Réinitialisation effectuée");
-    } catch (_) {
-      alert("Réinitialisé");
+      if (!j || !j.password) {
+        showPasswordModal("", "Erreur: mot de passe non reçu", null, id);
+      } else {
+        showPasswordModal(j.password, j.mask || "", j.log_id || null, id);
+      }
+    } catch (e) {
+      showPasswordModal("", "Erreur parsing réponse", null, id);
     }
+  }
+  // Modal helpers
+  const pwModal = document.getElementById("pw-reset-modal");
+  const pwVal = document.getElementById("pw-reset-value");
+  const pwCopy = document.getElementById("pw-reset-copy");
+  const pwClose = document.getElementById("pw-reset-close");
+  const pwMask = document.getElementById("pw-reset-mask");
+
+  function showPasswordModal(password, mask, logId, userId) {
+    if (pwVal) pwVal.value = password && password.length ? password : "";
+    if (pwMask) pwMask.textContent = mask ? mask : "";
+    if (pwModal) pwModal.style.display = "flex";
+  }
+  if (pwClose)
+    pwClose.addEventListener("click", () => {
+      if (pwModal) pwModal.style.display = "none";
+    });
+  if (pwCopy)
+    pwCopy.addEventListener("click", () => {
+      if (!pwVal) return;
+      const txt = pwVal.value;
+      navigator.clipboard
+        .writeText(txt)
+        .then(() => {
+          pwCopy.innerHTML = '<i class="fa fa-check"></i>';
+          setTimeout(
+            () => (pwCopy.innerHTML = '<i class="fa fa-copy"></i>'),
+            1500
+          );
+        })
+        .catch(() => {
+          alert("Copie impossible");
+        });
+    });
+
+  // Logs modal
+  const logModal = document.getElementById("pw-log-modal");
+  const logBody = document.getElementById("pw-log-body");
+  const logClose = document.getElementById("pw-log-close");
+  if (logClose)
+    logClose.addEventListener("click", () => {
+      if (logModal) logModal.style.display = "none";
+    });
+  window.LOAD_PW_LOG = async function () {
+    if (!logBody) return;
+    let token = localStorage.getItem("api_token") || readCookieToken() || "";
+    let url = routeBase + "/api/v1/users/reset-logs";
+    if (token) url += "?api_token=" + encodeURIComponent(token);
+    let r = await fetch(url, { headers: authHeaders(token) });
+    if (r.status === 401) {
+      token = (await refreshSessionToken()) || token;
+      url = routeBase + "/api/v1/users/reset-logs";
+      if (token) url += "?api_token=" + encodeURIComponent(token);
+      r = await fetch(url, { headers: authHeaders(token) });
+    }
+    if (!r.ok) {
+      logBody.innerHTML =
+        '<div class="muted" style="padding:.75rem">Erreur chargement journal</div>';
+      return;
+    }
+    const rows = await r.json();
+    if (!rows || rows.length === 0) {
+      logBody.innerHTML =
+        '<div class="muted" style="padding:.75rem">Aucun reset enregistré.</div>';
+      return;
+    }
+    const tbl = [
+      '<table class="pw-log-table"><thead><tr><th>ID</th><th>Utilisateur</th><th>Admin</th><th>Masque</th><th>Date</th></tr></thead><tbody>',
+    ];
+    rows.forEach((rw) => {
+      tbl.push(
+        "<tr><td>" +
+          rw.id +
+          "</td><td>" +
+          escapeHtml(rw.user_name || "#" + rw.user_id) +
+          "</td><td>" +
+          escapeHtml(rw.admin_name || "#" + rw.admin_id) +
+          "</td><td>" +
+          escapeHtml(rw.password_mask || "") +
+          "</td><td>" +
+          escapeHtml(rw.created_at || "") +
+          "</td></tr>"
+      );
+    });
+    tbl.push("</tbody></table>");
+    logBody.innerHTML = tbl.join("");
+  };
+  // Bouton journal
+  const btnLog = document.getElementById("btn-show-reset-log");
+  if (btnLog)
+    btnLog.addEventListener("click", () => {
+      const m = document.getElementById("pw-log-modal");
+      if (m) {
+        m.style.display = "flex";
+        window.LOAD_PW_LOG && window.LOAD_PW_LOG();
+      }
+    });
+  // Relative time helper
+  function formatRelative(ts) {
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return ts;
+    const diffMs = Date.now() - d.getTime();
+    const sec = Math.floor(diffMs / 1000);
+    if (sec < 60) return "il y a " + sec + "s";
+    const min = Math.floor(sec / 60);
+    if (min < 60) return "il y a " + min + "m";
+    const h = Math.floor(min / 60);
+    if (h < 24) return "il y a " + h + "h";
+    const day = Math.floor(h / 24);
+    if (day < 7) return "il y a " + day + "j";
+    return d.toISOString().substring(0, 10);
   }
 })();
