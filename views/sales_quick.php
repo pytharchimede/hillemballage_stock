@@ -20,7 +20,10 @@
         </div>
         <div>
             <label class="muted">Montant payé</label>
-            <input id="sq-paid" type="number" min="0" class="form-control" style="width:160px" />
+            <div style="display:flex;flex-direction:column;gap:6px">
+                <input id="sq-paid" type="number" min="0" class="form-control" style="width:160px" />
+                <div id="sq-hint" class="muted" style="font-size:12px"></div>
+            </div>
         </div>
         <button id="sq-submit" class="btn">Valider la vente</button>
     </div>

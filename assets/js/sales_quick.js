@@ -22,6 +22,7 @@
   const elClientSelected = document.getElementById("sq-client-selected");
   const elPaid = document.getElementById("sq-paid");
   const elCashAll = document.getElementById("sq-cash-all");
+  const elHint = document.getElementById("sq-hint");
 
   let products = [];
   let cart = [];
@@ -30,9 +31,13 @@
   function renderSelectedClient() {
     if (!elClientSelected) return;
     if (selectedClient && selectedClient.id) {
+      const bal =
+        typeof selectedClient.balance === "number" ? selectedClient.balance : 0;
       const label = `${selectedClient.name || "Client"}${
         selectedClient.id ? " (#" + selectedClient.id + ")" : ""
-      }${selectedClient.phone ? " • " + selectedClient.phone : ""}`;
+      }${
+        selectedClient.phone ? " • " + selectedClient.phone : ""
+      } • Solde: ${formatFCFA(bal)}`;
       elClientSelected.textContent = label;
       elClientSelected.classList.remove("muted");
       elClientSelected.style.fontWeight = "600";
@@ -47,13 +52,39 @@
     return String(v || 0);
   }
 
+  function formatFCFA(v) {
+    try {
+      return new Intl.NumberFormat("fr-FR").format(v || 0) + " FCFA";
+    } catch (_) {
+      return String(v || 0) + " FCFA";
+    }
+  }
+
   function computeTotal() {
     const t = cart.reduce((a, it) => a + it.unit_price * it.quantity, 0);
-    elTotal.textContent = formatAmount(t);
+    elTotal.textContent = formatFCFA(t);
     if (elCashAll && elCashAll.checked) {
       elPaid.value = t > 0 ? String(t) : "";
     }
+    updateHint(t);
     return t;
+  }
+
+  function updateHint(totalVal) {
+    if (!elHint) return;
+    const t =
+      typeof totalVal === "number"
+        ? totalVal
+        : cart.reduce((a, it) => a + it.unit_price * it.quantity, 0);
+    const bal =
+      selectedClient && typeof selectedClient.balance === "number"
+        ? selectedClient.balance
+        : 0;
+    const paid = parseInt(elPaid?.value || "0", 10) || 0;
+    const remaining = Math.max(0, t - paid);
+    elHint.textContent = `Total: ${formatFCFA(t)} • Solde client: ${formatFCFA(
+      bal
+    )} • Reste à payer: ${formatFCFA(remaining)}`;
   }
 
   function renderCart() {
@@ -70,11 +101,13 @@
         <td>${it.name}</td>
         <td>
           <button class="btn-ghost small" data-dec="${idx}">−</button>
-          <span style="display:inline-block;min-width:24px;text-align:center">${it.quantity}</span>
+          <span style="display:inline-block;min-width:24px;text-align:center">${
+            it.quantity
+          }</span>
           <button class="btn-ghost small" data-inc="${idx}">+</button>
         </td>
-        <td>${it.unit_price}</td>
-        <td>${sub}</td>
+        <td>${formatFCFA(it.unit_price)}</td>
+        <td>${formatFCFA(sub)}</td>
         <td><button class="btn-ghost small" data-rm="${idx}">Retirer</button></td>
       </tr>`;
     });
@@ -126,9 +159,13 @@
       '<div class="grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px">';
     list.forEach((p) => {
       const stock = p.stock_depot ?? p.stock_total ?? 0;
-      h += `<button class="card" data-p="${p.id}" style="padding:8px;text-align:left">
+      h += `<button class="card" data-p="${
+        p.id
+      }" style="padding:8px;text-align:left">
         <div style="font-weight:600">${p.name}</div>
-        <div class="muted" style="font-size:12px">PU: ${p.unit_price}</div>
+        <div class="muted" style="font-size:12px">PU: ${formatFCFA(
+          p.unit_price
+        )}</div>
         <div class="muted" style="font-size:12px">Stock: ${stock}</div>
       </button>`;
     });
@@ -221,6 +258,7 @@
     });
   if (elSearch) elSearch.addEventListener("input", applySearch);
   if (elCashAll) elCashAll.addEventListener("change", () => computeTotal());
+  if (elPaid) elPaid.addEventListener("input", () => updateHint());
 
   if (elSubmit) {
     elSubmit.addEventListener("click", async () => {
@@ -270,6 +308,7 @@
         renderCart();
         elPaid.value = "";
         applySearch();
+        updateHint(0);
       } catch (e) {
         window.showToast && window.showToast("error", "Erreur réseau");
       }
@@ -332,9 +371,10 @@
       }
       let h = '<div style="display:flex; flex-direction:column; gap:6px">';
       rows.forEach((c) => {
+        const bal = typeof c.balance === "number" ? c.balance : 0;
         const label = `${c.name || "Client"}${c.id ? " (#" + c.id + ")" : ""}${
           c.phone ? " • " + c.phone : ""
-        }`;
+        } • Solde: ${formatFCFA(bal)}`;
         h += `<button class="btn-ghost" data-c="${c.id}" style="text-align:left">${label}</button>`;
       });
       h += "</div>";
@@ -348,6 +388,7 @@
               id: cli.id,
               name: cli.name,
               phone: cli.phone || "",
+              balance: typeof cli.balance === "number" ? cli.balance : 0,
             };
             renderSelectedClient();
             dlg.remove();
@@ -394,7 +435,7 @@
           return;
         }
         const j = await r.json();
-        selectedClient = { id: j.id, name, phone };
+        selectedClient = { id: j.id, name, phone, balance: 0 };
         renderSelectedClient();
         dlg.remove();
       } catch (_) {
@@ -414,4 +455,5 @@
   loadDepots();
   renderCart();
   renderSelectedClient();
+  updateHint(0);
 })();

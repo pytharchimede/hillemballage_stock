@@ -142,9 +142,11 @@
         .filter((it) => it.product_id === pid)
         .reduce((a, b) => a + (b.quantity || 0), 0);
       if (qty + used > stock) {
-        elMsg.textContent = `Quantité demandée (${qty}) dépasse le stock disponible (${
-          stock - used
-        } restant).`;
+        const rest = Math.max(0, stock - used);
+        elMsg.textContent = `Quantité demandée (${qty}) dépasse le stock disponible (${rest} restant).`;
+        if (window.showToast) {
+          window.showToast("error", `Stock insuffisant: ${rest} restant`);
+        }
         return;
       }
       const name =

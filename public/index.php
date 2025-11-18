@@ -14,6 +14,12 @@ use App\Models\Product;
 
 session_start();
 
+function format_fcfa($v): string
+{
+    $n = (int)$v;
+    return number_format($n, 0, ',', ' ') . ' FCFA';
+}
+
 function apiUser(): ?array
 {
     $hdr = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
@@ -1790,6 +1796,231 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode(ReportService::monthly($depotId, $month));
         exit;
     }
+    // Financial & Stock summary (point financier & stock)
+    if ($path === '/api/v1/finance-stock' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $auth = requireAuth();
+        $role = (string)($auth['role'] ?? '');
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
+        $paramDepot = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
+        $from = trim($_GET['from'] ?? '');
+        $to = trim($_GET['to'] ?? '');
+        // Scope stock (admin can pick depot, manager fixed to own depot)
+        $stockWhere = [];
+        $stockParams = [];
+        if ($role === 'admin') {
+            if ($paramDepot && $paramDepot > 0) {
+                $stockWhere[] = 's.depot_id = :dep';
+                $stockParams[':dep'] = $paramDepot;
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $stockWhere[] = 's.depot_id = :dep';
+            $stockParams[':dep'] = $userDepotId;
+        }
+        $stockScopeSql = $stockWhere ? (' WHERE ' . implode(' AND ', $stockWhere)) : '';
+        // Stock by depot
+        $byDepot = DB::query('SELECT s.depot_id, d.name AS depot_name, COALESCE(SUM(s.quantity),0) qty, COALESCE(SUM(s.quantity * p.cost_price),0) valuation '
+            . 'FROM stocks s JOIN products p ON p.id=s.product_id JOIN depots d ON d.id=s.depot_id'
+            . $stockScopeSql . ' GROUP BY s.depot_id, d.name ORDER BY d.name ASC', $stockParams);
+        $stockTotals = DB::query('SELECT COALESCE(SUM(s.quantity),0) qty, COALESCE(SUM(s.quantity * p.cost_price),0) valuation '
+            . 'FROM stocks s JOIN products p ON p.id=s.product_id' . $stockScopeSql, $stockParams)[0] ?? ['qty' => 0, 'valuation' => 0];
+        // Client balances (global or by depot scope via sales join if applicable)
+        $salesWhere = [];
+        $salesParams = [];
+        if ($role === 'admin') {
+            if ($paramDepot && $paramDepot > 0) {
+                $salesWhere[] = 's.depot_id = :sdep';
+                $salesParams[':sdep'] = $paramDepot;
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $salesWhere[] = 's.depot_id = :sdep';
+            $salesParams[':sdep'] = $userDepotId;
+        }
+        if ($from !== '') {
+            $salesWhere[] = 's.sold_at >= :fromd';
+            $salesParams[':fromd'] = $from . ' 00:00:00';
+        }
+        if ($to !== '') {
+            $salesWhere[] = 's.sold_at <= :tod';
+            $salesParams[':tod'] = $to . ' 23:59:59';
+        }
+        $salesScope = $salesWhere ? (' WHERE ' . implode(' AND ', $salesWhere)) : '';
+        $clients = DB::query('SELECT c.id, c.name, COALESCE(SUM(s.total_amount) - SUM(s.amount_paid),0) AS balance '
+            . 'FROM sales s JOIN clients c ON c.id = s.client_id' . $salesScope
+            . ' GROUP BY c.id,c.name HAVING balance <> 0 ORDER BY balance DESC LIMIT 1000', $salesParams);
+        $balancesTotal = (int)(DB::query('SELECT COALESCE(SUM(total_amount - amount_paid),0) v FROM sales s' . $salesScope, $salesParams)[0]['v'] ?? 0);
+        echo json_encode([
+            'by_depot' => $byDepot,
+            'stock_totals' => ['qty' => (int)($stockTotals['qty'] ?? 0), 'valuation' => (int)($stockTotals['valuation'] ?? 0)],
+            'client_balances' => $clients,
+            'receivables_total' => $balancesTotal,
+            'filters' => ['depot_id' => $paramDepot, 'from' => $from, 'to' => $to]
+        ]);
+        exit;
+    }
+    // Finance & stock export CSV
+    if ($path === '/api/v1/finance-stock/export' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $auth = requireAuth();
+        // Reuse API to gather
+        $_SERVER['REQUEST_METHOD'] = 'GET';
+        // recompute inline to avoid nested dispatch
+        $role = (string)($auth['role'] ?? '');
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
+        $paramDepot = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
+        $from = trim($_GET['from'] ?? '');
+        $to = trim($_GET['to'] ?? '');
+        $stockWhere = [];
+        $stockParams = [];
+        if ($role === 'admin') {
+            if ($paramDepot && $paramDepot > 0) {
+                $stockWhere[] = 's.depot_id = :dep';
+                $stockParams[':dep'] = $paramDepot;
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $stockWhere[] = 's.depot_id = :dep';
+            $stockParams[':dep'] = $userDepotId;
+        }
+        $stockScopeSql = $stockWhere ? (' WHERE ' . implode(' AND ', $stockWhere)) : '';
+        $byDepot = DB::query('SELECT s.depot_id, d.name AS depot_name, COALESCE(SUM(s.quantity),0) qty, COALESCE(SUM(s.quantity * p.cost_price),0) valuation '
+            . 'FROM stocks s JOIN products p ON p.id=s.product_id JOIN depots d ON d.id=s.depot_id'
+            . $stockScopeSql . ' GROUP BY s.depot_id, d.name ORDER BY d.name ASC', $stockParams);
+        $stockTotals = DB::query('SELECT COALESCE(SUM(s.quantity),0) qty, COALESCE(SUM(s.quantity * p.cost_price),0) valuation '
+            . 'FROM stocks s JOIN products p ON p.id=s.product_id' . $stockScopeSql, $stockParams)[0] ?? ['qty' => 0, 'valuation' => 0];
+        $salesWhere = [];
+        $salesParams = [];
+        if ($role === 'admin') {
+            if ($paramDepot && $paramDepot > 0) {
+                $salesWhere[] = 's.depot_id = :sdep';
+                $salesParams[':sdep'] = $paramDepot;
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $salesWhere[] = 's.depot_id = :sdep';
+            $salesParams[':sdep'] = $userDepotId;
+        }
+        if ($from !== '') {
+            $salesWhere[] = 's.sold_at >= :fromd';
+            $salesParams[':fromd'] = $from . ' 00:00:00';
+        }
+        if ($to !== '') {
+            $salesWhere[] = 's.sold_at <= :tod';
+            $salesParams[':tod'] = $to . ' 23:59:59';
+        }
+        $salesScope = $salesWhere ? (' WHERE ' . implode(' AND ', $salesWhere)) : '';
+        $clients = DB::query('SELECT c.id, c.name, COALESCE(SUM(s.total_amount) - SUM(s.amount_paid),0) AS balance '
+            . 'FROM sales s JOIN clients c ON c.id = s.client_id' . $salesScope
+            . ' GROUP BY c.id,c.name HAVING balance <> 0 ORDER BY balance DESC LIMIT 1000', $salesParams);
+        $balancesTotal = (int)(DB::query('SELECT COALESCE(SUM(total_amount - amount_paid),0) v FROM sales s' . $salesScope, $salesParams)[0]['v'] ?? 0);
+
+        header('Content-Type: text/csv; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="finance_stock.csv"');
+        $out = fopen('php://output', 'w');
+        fputcsv($out, ['Point financier & stock']);
+        fputcsv($out, ['Période', $from ?: '-', $to ?: '-']);
+        fputcsv($out, ['Dépôt', ($paramDepot ?: ($role === 'gerant' ? $userDepotId : 'Tous'))]);
+        fputcsv($out, []);
+        fputcsv($out, ['Stocks par dépôt']);
+        fputcsv($out, ['Dépôt', 'Quantité', 'Valorisation']);
+        foreach ($byDepot as $r) fputcsv($out, [$r['depot_name'], (int)$r['qty'], format_fcfa((int)$r['valuation'])]);
+        fputcsv($out, ['TOTAL', (int)($stockTotals['qty'] ?? 0), format_fcfa((int)($stockTotals['valuation'] ?? 0))]);
+        fputcsv($out, []);
+        fputcsv($out, ['Soldes clients (≠ 0)']);
+        fputcsv($out, ['Client', 'Solde']);
+        foreach ($clients as $c) fputcsv($out, [$c['name'], format_fcfa((int)$c['balance'])]);
+        fputcsv($out, ['Encours total', format_fcfa($balancesTotal)]);
+        fclose($out);
+        try {
+            audit_log((int)$auth['id'], 'export', 'finance_stock', null, $path, 'GET', ['from' => $from, 'to' => $to, 'depot' => $paramDepot]);
+        } catch (\Throwable $e) {
+        }
+        exit;
+    }
+    // Finance & stock export PDF
+    if ($path === '/api/v1/finance-stock/export-pdf' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $auth = requireAuth();
+        if (!class_exists('TCPDF')) {
+            try {
+                @include_once __DIR__ . '/../vendor/tecnickcom/tcpdf/tcpdf.php';
+            } catch (\Throwable $e) {
+            }
+        }
+        if (!class_exists('TCPDF')) {
+            http_response_code(500);
+            echo 'TCPDF non installé. Installez avec: composer require tecnickcom/tcpdf';
+            exit;
+        }
+        $role = (string)($auth['role'] ?? '');
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
+        $paramDepot = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
+        $from = trim($_GET['from'] ?? '');
+        $to = trim($_GET['to'] ?? '');
+        $stockWhere = [];
+        $stockParams = [];
+        if ($role === 'admin') {
+            if ($paramDepot && $paramDepot > 0) {
+                $stockWhere[] = 's.depot_id = :dep';
+                $stockParams[':dep'] = $paramDepot;
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $stockWhere[] = 's.depot_id = :dep';
+            $stockParams[':dep'] = $userDepotId;
+        }
+        $stockScopeSql = $stockWhere ? (' WHERE ' . implode(' AND ', $stockWhere)) : '';
+        $byDepot = DB::query('SELECT s.depot_id, d.name AS depot_name, COALESCE(SUM(s.quantity),0) qty, COALESCE(SUM(s.quantity * p.cost_price),0) valuation '
+            . 'FROM stocks s JOIN products p ON p.id=s.product_id JOIN depots d ON d.id=s.depot_id' . $stockScopeSql . ' GROUP BY s.depot_id, d.name ORDER BY d.name ASC', $stockParams);
+        $stockTotals = DB::query('SELECT COALESCE(SUM(s.quantity),0) qty, COALESCE(SUM(s.quantity * p.cost_price),0) valuation '
+            . 'FROM stocks s JOIN products p ON p.id=s.product_id' . $stockScopeSql, $stockParams)[0] ?? ['qty' => 0, 'valuation' => 0];
+        $salesWhere = [];
+        $salesParams = [];
+        if ($role === 'admin') {
+            if ($paramDepot && $paramDepot > 0) {
+                $salesWhere[] = 's.depot_id = :sdep';
+                $salesParams[':sdep'] = $paramDepot;
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $salesWhere[] = 's.depot_id = :sdep';
+            $salesParams[':sdep'] = $userDepotId;
+        }
+        if ($from !== '') {
+            $salesWhere[] = 's.sold_at >= :fromd';
+            $salesParams[':fromd'] = $from . ' 00:00:00';
+        }
+        if ($to !== '') {
+            $salesWhere[] = 's.sold_at <= :tod';
+            $salesParams[':tod'] = $to . ' 23:59:59';
+        }
+        $salesScope = $salesWhere ? (' WHERE ' . implode(' AND ', $salesWhere)) : '';
+        $clients = DB::query('SELECT c.id, c.name, COALESCE(SUM(s.total_amount) - SUM(s.amount_paid),0) AS balance '
+            . 'FROM sales s JOIN clients c ON c.id = s.client_id' . $salesScope
+            . ' GROUP BY c.id,c.name HAVING balance <> 0 ORDER BY balance DESC LIMIT 1000', $salesParams);
+        $balancesTotal = (int)(DB::query('SELECT COALESCE(SUM(total_amount - amount_paid),0) v FROM sales s' . $salesScope, $salesParams)[0]['v'] ?? 0);
+
+        $pdf = new \TCPDF('P', 'mm', 'A4');
+        $pdf->SetCreator('Hill Stock');
+        $pdf->SetAuthor('Hill Stock');
+        $pdf->SetTitle('Point financier & stock');
+        $pdf->AddPage();
+        $html = '<h2 style="margin:0 0 6px">Point financier & stock</h2>';
+        $html .= '<div style="font-size:10px;color:#666">Généré le ' . htmlspecialchars(date('Y-m-d H:i')) . ' — Période: ' . htmlspecialchars($from ?: '-') . ' → ' . htmlspecialchars($to ?: '-') . '</div>';
+        $html .= '<br />';
+        $html .= '<h4>Stocks par dépôt</h4><table border="1" cellpadding="4"><thead><tr><th>Dépôt</th><th>Quantité</th><th>Valorisation</th></tr></thead><tbody>';
+        foreach ($byDepot as $r) {
+            $html .= '<tr><td>' . htmlspecialchars($r['depot_name']) . '</td><td align="right">' . (int)$r['qty'] . '</td><td align="right">' . htmlspecialchars(format_fcfa((int)$r['valuation'])) . '</td></tr>';
+        }
+        $html .= '<tr><th align="right">TOTAL</th><th align="right">' . (int)($stockTotals['qty'] ?? 0) . '</th><th align="right">' . htmlspecialchars(format_fcfa((int)($stockTotals['valuation'] ?? 0))) . '</th></tr>';
+        $html .= '</tbody></table><br />';
+        $html .= '<h4>Soldes clients (≠ 0)</h4><table border="1" cellpadding="4"><thead><tr><th>Client</th><th>Solde</th></tr></thead><tbody>';
+        foreach ($clients as $c) {
+            $html .= '<tr><td>' . htmlspecialchars($c['name']) . '</td><td align="right">' . htmlspecialchars(format_fcfa((int)$c['balance'])) . '</td></tr>';
+        }
+        $html .= '<tr><th align="right">Encours total</th><th align="right">' . htmlspecialchars(format_fcfa($balancesTotal)) . '</th></tr>';
+        $html .= '</tbody></table>';
+        $pdf->writeHTML($html, true, false, true, false, '');
+        $pdf->Output('point_financier_stock.pdf', 'I');
+        try {
+            audit_log((int)$auth['id'], 'export', 'finance_stock', null, $path, 'GET', ['from' => $from, 'to' => $to, 'depot' => $paramDepot]);
+        } catch (\Throwable $e) {
+        }
+        exit;
+    }
     // Summary endpoint (aggregated for dashboard)
     if ($path === '/api/v1/summary' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         requireAuth();
@@ -2058,6 +2289,22 @@ if (str_starts_with($path, '/api/v1')) {
             echo json_encode(['error' => 'depot_id, user_id et items requis']);
             exit;
         }
+        // Strict stock validation before dispatch
+        $insuff = [];
+        foreach ($items as $it) {
+            $pid = (int)($it['product_id'] ?? 0);
+            $qty = max(0, (int)($it['quantity'] ?? 0));
+            if ($pid <= 0 || $qty <= 0) continue;
+            $avail = Stock::available($depotId, $pid);
+            if ($avail < $qty) {
+                $insuff[] = ['product_id' => $pid, 'requested' => $qty, 'available' => (int)$avail];
+            }
+        }
+        if (!empty($insuff)) {
+            http_response_code(422);
+            echo json_encode(['error' => 'INSUFFICIENT_STOCK', 'details' => $insuff]);
+            exit;
+        }
         // Create round
         DB::execute('INSERT INTO seller_rounds(depot_id,user_id,status,assigned_at) VALUES(:d,:u,"open",NOW())', [':d' => $depotId, ':u' => $sellerId]);
         $rid = (int)DB::query('SELECT LAST_INSERT_ID() id')[0]['id'];
@@ -2105,20 +2352,34 @@ if (str_starts_with($path, '/api/v1')) {
         $returns = $data['returns'] ?? [];
         $cash = (int)($data['cash_turned_in'] ?? 0);
         $notes = $data['notes'] ?? null;
-        // Apply returns -> stock IN
+        // Apply returns with strict cap based on assigned-previously-returned -> stock IN only for applied delta
         $sm = new StockMovement();
+        $appliedMeta = [];
         foreach ($returns as $it) {
             $pid = (int)($it['product_id'] ?? 0);
-            $qty = max(0, (int)($it['quantity'] ?? 0));
-            if ($pid <= 0 || $qty <= 0) continue;
-            DB::execute('UPDATE seller_round_items SET qty_returned = LEAST(qty_assigned, qty_returned + :q) WHERE round_id=:r AND product_id=:p', [':q' => $qty, ':r' => $rid, ':p' => $pid]);
-            // Stock IN back to depot
-            $sm->move((int)$round['depot_id'], $pid, 'in', $qty, date('Y-m-d H:i:s'), null, 'return:user:' . (int)$round['user_id']);
-            Stock::adjust((int)$round['depot_id'], $pid, 'in', $qty);
+            $req = max(0, (int)($it['quantity'] ?? 0));
+            if ($pid <= 0 || $req <= 0) continue;
+            $row = DB::query('SELECT qty_assigned, qty_returned FROM seller_round_items WHERE round_id=:r AND product_id=:p LIMIT 1', [':r' => $rid, ':p' => $pid])[0] ?? null;
+            if (!$row) continue;
+            $assigned = (int)$row['qty_assigned'];
+            $returned = (int)$row['qty_returned'];
+            $allowed = max(0, $assigned - $returned);
+            $apply = min($req, $allowed);
+            if ($apply <= 0) {
+                $appliedMeta[] = ['product_id' => $pid, 'requested' => $req, 'applied' => 0, 'allowed' => $allowed];
+                continue;
+            }
+            DB::execute('UPDATE seller_round_items SET qty_returned = qty_returned + :q WHERE round_id=:r AND product_id=:p', [':q' => $apply, ':r' => $rid, ':p' => $pid]);
+            // Stock IN back to depot for applied part only
+            $sm->move((int)$round['depot_id'], $pid, 'in', $apply, date('Y-m-d H:i:s'), null, 'return:user:' . (int)$round['user_id']);
+            Stock::adjust((int)$round['depot_id'], $pid, 'in', $apply);
+            if ($apply !== $req) {
+                $appliedMeta[] = ['product_id' => $pid, 'requested' => $req, 'applied' => $apply, 'allowed' => $allowed];
+            }
         }
         DB::execute('UPDATE seller_rounds SET status="closed", cash_turned_in=:c, notes=:n, closed_at=NOW() WHERE id=:id', [':c' => $cash, ':n' => $notes, ':id' => $rid]);
         try {
-            audit_log((int)$auth['id'], 'modify', 'seller_rounds', $rid, $path, 'PATCH', ['cash' => $cash]);
+            audit_log((int)$auth['id'], 'modify', 'seller_rounds', $rid, $path, 'PATCH', ['cash' => $cash, 'returns' => $appliedMeta]);
         } catch (\Throwable $e) {
         }
         echo json_encode(['closed' => true, 'round_id' => $rid]);
@@ -2341,27 +2602,27 @@ if (str_starts_with($path, '/api/v1')) {
 
         // Quick stats
         fputcsv($out, ['Quick stats']);
-        fputcsv($out, ['CA du jour', $caToday]);
+        fputcsv($out, ['CA du jour', format_fcfa($caToday)]);
         fputcsv($out, ['Ventes du jour', $salesToday]);
         fputcsv($out, ['Clients actifs (30j)', $activeClients30]);
-        fputcsv($out, ['Encours (créances)', $receivablesTotal]);
+        fputcsv($out, ['Encours (créances)', format_fcfa($receivablesTotal)]);
         fputcsv($out, ['Stock total', $stockTotal]);
-        fputcsv($out, ['Valorisation stock', $stockValuation]);
+        fputcsv($out, ['Valorisation stock', format_fcfa($stockValuation)]);
         fputcsv($out, ['Tournées ouvertes', $roundsOpen]);
-        fputcsv($out, ['Cash remis (auj.)', $cashToday]);
-        fputcsv($out, ['Recouvrement (auj.)', $collectionsToday]);
+        fputcsv($out, ['Cash remis (auj.)', format_fcfa($cashToday)]);
+        fputcsv($out, ['Recouvrement (auj.)', format_fcfa($collectionsToday)]);
         fputcsv($out, []);
 
         // Revenue series
         fputcsv($out, ['Revenus sur ' . $days . ' jours']);
         fputcsv($out, ['Date', 'Montant']);
-        foreach ($rowsSeries as $r) fputcsv($out, [$r['d'], (int)$r['v']]);
+        foreach ($rowsSeries as $r) fputcsv($out, [$r['d'], format_fcfa((int)$r['v'])]);
         fputcsv($out, []);
 
         // Top products
         fputcsv($out, ['Top produits (30j)']);
         fputcsv($out, ['Produit', 'Total']);
-        foreach ($topProducts as $r) fputcsv($out, [$r['name'], (int)$r['total']]);
+        foreach ($topProducts as $r) fputcsv($out, [$r['name'], format_fcfa((int)$r['total'])]);
         fputcsv($out, []);
 
         // Orders status
@@ -2373,7 +2634,7 @@ if (str_starts_with($path, '/api/v1')) {
         // Sales by user
         fputcsv($out, ['Ventes par utilisateur (30j)']);
         fputcsv($out, ['Utilisateur', 'CA']);
-        foreach ($byUser as $r) fputcsv($out, [($r['name'] ?? ('#' . $r['id'])), (int)$r['total']]);
+        foreach ($byUser as $r) fputcsv($out, [($r['name'] ?? ('#' . $r['id'])), format_fcfa((int)$r['total'])]);
         fputcsv($out, []);
 
         // Low stock
@@ -2385,16 +2646,16 @@ if (str_starts_with($path, '/api/v1')) {
         // Top balances
         fputcsv($out, ['Top soldes clients']);
         fputcsv($out, ['Client', 'Solde']);
-        foreach ($topBalances as $r) fputcsv($out, [$r['name'], (int)$r['balance']]);
+        foreach ($topBalances as $r) fputcsv($out, [$r['name'], format_fcfa((int)$r['balance'])]);
         fputcsv($out, []);
 
         // Daily sales table
         fputcsv($out, ['Ventes du jour (dépôt ' . $dailyDepot . ')']);
         fputcsv($out, ['Article', 'PU', 'Sorties', 'Retourné', 'Vendu', 'Montant']);
         foreach ($daily['rows'] as $row) {
-            fputcsv($out, [$row['name'], (int)$row['unit_price'], (int)$row['sorties'], (int)$row['retourne'], (int)$row['vendu'], (int)$row['montant']]);
+            fputcsv($out, [$row['name'], format_fcfa((int)$row['unit_price']), (int)$row['sorties'], (int)$row['retourne'], (int)$row['vendu'], format_fcfa((int)$row['montant'])]);
         }
-        fputcsv($out, ['TOTAL', '', '', '', '', (int)$daily['total_montant']]);
+        fputcsv($out, ['TOTAL', '', '', '', '', format_fcfa((int)$daily['total_montant'])]);
         fclose($out);
         // Audit export
         try {
@@ -2532,26 +2793,26 @@ if (str_starts_with($path, '/api/v1')) {
         $html .= '<br />';
         // Quick stats
         $html .= '<h4>Indicateurs</h4><table border="1" cellpadding="4"><tbody>'
-            . '<tr><td>CA du jour</td><td align="right">' . (int)$caToday . '</td></tr>'
+            . '<tr><td>CA du jour</td><td align="right">' . htmlspecialchars(format_fcfa($caToday)) . '</td></tr>'
             . '<tr><td>Ventes du jour</td><td align="right">' . (int)$salesToday . '</td></tr>'
             . '<tr><td>Clients actifs (30j)</td><td align="right">' . (int)$activeClients30 . '</td></tr>'
-            . '<tr><td>Encours (créances)</td><td align="right">' . (int)$receivablesTotal . '</td></tr>'
+            . '<tr><td>Encours (créances)</td><td align="right">' . htmlspecialchars(format_fcfa($receivablesTotal)) . '</td></tr>'
             . '<tr><td>Stock total</td><td align="right">' . (int)$stockTotal . '</td></tr>'
-            . '<tr><td>Valorisation stock</td><td align="right">' . (int)$stockValuation . '</td></tr>'
+            . '<tr><td>Valorisation stock</td><td align="right">' . htmlspecialchars(format_fcfa($stockValuation)) . '</td></tr>'
             . '<tr><td>Tournées ouvertes</td><td align="right">' . (int)$roundsOpen . '</td></tr>'
-            . '<tr><td>Cash remis (auj.)</td><td align="right">' . (int)$cashToday . '</td></tr>'
-            . '<tr><td>Recouvrement (auj.)</td><td align="right">' . (int)$collectionsToday . '</td></tr>'
+            . '<tr><td>Cash remis (auj.)</td><td align="right">' . htmlspecialchars(format_fcfa($cashToday)) . '</td></tr>'
+            . '<tr><td>Recouvrement (auj.)</td><td align="right">' . htmlspecialchars(format_fcfa($collectionsToday)) . '</td></tr>'
             . '</tbody></table><br />';
         // Revenus série
         $html .= '<h4>Revenus (' . (int)$days . ' jours)</h4><table border="1" cellpadding="4"><thead><tr><th>Date</th><th>Montant</th></tr></thead><tbody>';
         foreach ($rowsSeries as $r) {
-            $html .= '<tr><td>' . htmlspecialchars($r['d']) . '</td><td align="right">' . (int)$r['v'] . '</td></tr>';
+            $html .= '<tr><td>' . htmlspecialchars($r['d']) . '</td><td align="right">' . htmlspecialchars(format_fcfa((int)$r['v'])) . '</td></tr>';
         }
         $html .= '</tbody></table><br />';
         // Top produits
         $html .= '<h4>Top produits (30j)</h4><table border="1" cellpadding="4"><thead><tr><th>Produit</th><th>Total</th></tr></thead><tbody>';
         foreach ($topProducts as $r) {
-            $html .= '<tr><td>' . htmlspecialchars($r['name']) . '</td><td align="right">' . (int)$r['total'] . '</td></tr>';
+            $html .= '<tr><td>' . htmlspecialchars($r['name']) . '</td><td align="right">' . htmlspecialchars(format_fcfa((int)$r['total'])) . '</td></tr>';
         }
         $html .= '</tbody></table><br />';
         // Commandes
@@ -2563,7 +2824,7 @@ if (str_starts_with($path, '/api/v1')) {
         // Par utilisateur
         $html .= '<h4>Ventes par utilisateur (30j)</h4><table border="1" cellpadding="4"><thead><tr><th>Utilisateur</th><th>CA</th></tr></thead><tbody>';
         foreach ($byUser as $r) {
-            $html .= '<tr><td>' . htmlspecialchars(($r['name'] ?? ('#' . $r['id']))) . '</td><td align="right">' . (int)$r['total'] . '</td></tr>';
+            $html .= '<tr><td>' . htmlspecialchars(($r['name'] ?? ('#' . $r['id']))) . '</td><td align="right">' . htmlspecialchars(format_fcfa((int)$r['total'])) . '</td></tr>';
         }
         $html .= '</tbody></table><br />';
         // Low stock
@@ -2575,15 +2836,15 @@ if (str_starts_with($path, '/api/v1')) {
         // Soldes clients
         $html .= '<h4>Top soldes clients</h4><table border="1" cellpadding="4"><thead><tr><th>Client</th><th>Solde</th></tr></thead><tbody>';
         foreach ($topBalances as $r) {
-            $html .= '<tr><td>' . htmlspecialchars($r['name']) . '</td><td align="right">' . (int)$r['balance'] . '</td></tr>';
+            $html .= '<tr><td>' . htmlspecialchars($r['name']) . '</td><td align="right">' . htmlspecialchars(format_fcfa((int)$r['balance'])) . '</td></tr>';
         }
         $html .= '</tbody></table><br />';
         // Ventes du jour
         $html .= '<h4>Ventes du jour (dépôt ' . (int)$dailyDepot . ')</h4><table border="1" cellpadding="4"><thead><tr><th>Article</th><th>PU</th><th>Sorties</th><th>Retourné</th><th>Vendu</th><th>Montant</th></tr></thead><tbody>';
         foreach ($daily['rows'] as $row) {
-            $html .= '<tr><td>' . htmlspecialchars($row['name']) . '</td><td align="right">' . (int)$row['unit_price'] . '</td><td align="right">' . (int)$row['sorties'] . '</td><td align="right">' . (int)$row['retourne'] . '</td><td align="right">' . (int)$row['vendu'] . '</td><td align="right">' . (int)$row['montant'] . '</td></tr>';
+            $html .= '<tr><td>' . htmlspecialchars($row['name']) . '</td><td align="right">' . htmlspecialchars(format_fcfa((int)$row['unit_price'])) . '</td><td align="right">' . (int)$row['sorties'] . '</td><td align="right">' . (int)$row['retourne'] . '</td><td align="right">' . (int)$row['vendu'] . '</td><td align="right">' . htmlspecialchars(format_fcfa((int)$row['montant'])) . '</td></tr>';
         }
-        $html .= '<tr><th colspan="5" align="right">Total</th><th align="right">' . (int)$daily['total_montant'] . '</th></tr>';
+        $html .= '<tr><th colspan="5" align="right">Total</th><th align="right">' . htmlspecialchars(format_fcfa((int)$daily['total_montant'])) . '</th></tr>';
         $html .= '</tbody></table>';
         $pdf->writeHTML($html, true, false, true, false, '');
         $pdf->Output('dashboard.pdf', 'I');
@@ -3067,6 +3328,22 @@ if ($path === '/sales-quick') {
     }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/sales_quick.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+
+// Finance & Stock page
+if ($path === '/finance-stock') {
+    if (empty($_SESSION['user_id'])) {
+        header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
+        exit;
+    }
+    try {
+        audit_log((int)$_SESSION['user_id'], 'view', 'finance_stock', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/finance_stock.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }

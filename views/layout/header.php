@@ -27,6 +27,7 @@
             <a href="<?= $routeBase ?>/orders">Commandes</a>
             <a href="<?= $routeBase ?>/transfers">Transferts</a>
             <a href="<?= $routeBase ?>/sales-quick">Vente rapide</a>
+            <a href="<?= $routeBase ?>/finance-stock">Point financier & stock</a>
             <a href="<?= $routeBase ?>/seller-rounds">Remises</a>
             <a href="<?= $routeBase ?>/collections">Recouvrement</a>
             <a href="<?= $routeBase ?>/users">Utilisateurs</a>
