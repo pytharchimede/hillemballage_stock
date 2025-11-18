@@ -19,19 +19,20 @@
         <div class="brand"><i class="fas fa-boxes"></i> Hillemballage</div>
         <button class="hamburger" id="navToggle" aria-label="menu">☰</button>
         <nav id="mainNav">
-            <a href="<?= $routeBase ?>/">Dashboard</a>
-            <a href="<?= $routeBase ?>/depots">Dépôts</a>
-            <a href="<?= $routeBase ?>/depots/map">Carte dépôts</a>
-            <a href="<?= $routeBase ?>/products">Produits</a>
-            <a href="<?= $routeBase ?>/clients">Clients</a>
-            <a href="<?= $routeBase ?>/orders">Commandes</a>
-            <a href="<?= $routeBase ?>/transfers">Transferts</a>
-            <a href="<?= $routeBase ?>/sales-quick">Vente rapide</a>
-            <a href="<?= $routeBase ?>/finance-stock">Point financier & stock</a>
-            <a href="<?= $routeBase ?>/seller-rounds">Remises</a>
-            <a href="<?= $routeBase ?>/collections">Recouvrement</a>
-            <a href="<?= $routeBase ?>/users">Utilisateurs</a>
-            <a href="<?= $routeBase ?>/logs">Logs</a>
+            <a data-entity="dashboard" data-action="view" href="<?= $routeBase ?>/">Dashboard</a>
+            <a data-entity="depots" data-action="view" href="<?= $routeBase ?>/depots">Dépôts</a>
+            <a data-entity="depots" data-action="view" href="<?= $routeBase ?>/depots/map">Carte dépôts</a>
+            <a data-entity="products" data-action="view" href="<?= $routeBase ?>/products">Produits</a>
+            <a data-entity="clients" data-action="view" href="<?= $routeBase ?>/clients">Clients</a>
+            <a data-entity="orders" data-action="view" href="<?= $routeBase ?>/orders">Commandes</a>
+            <a data-entity="transfers" data-action="view" href="<?= $routeBase ?>/transferts">Transferts</a>
+            <a data-entity="sales" data-action="view" href="<?= $routeBase ?>/sales-quick">Vente rapide</a>
+            <a data-entity="finance_stock" data-action="view" href="<?= $routeBase ?>/finance-stock">Point financier & stock</a>
+            <a data-entity="seller_rounds" data-action="view" href="<?= $routeBase ?>/seller-rounds">Remises</a>
+            <a data-entity="collections" data-action="view" href="<?= $routeBase ?>/collections">Recouvrement</a>
+            <a data-entity="users" data-action="view" href="<?= $routeBase ?>/users">Utilisateurs</a>
+            <a data-entity="audit" data-action="view" href="<?= $routeBase ?>/logs">Logs</a>
+            <a data-entity="permissions" data-action="view" href="<?= $routeBase ?>/permissions">Permissions</a>
             <div class="nav-right">
                 <?php if (!empty($_SESSION['user_id'])): ?>
                     <span class="user">👤 <?= htmlspecialchars($_SESSION['user_name'] ?? 'Utilisateur') ?></span>
@@ -69,4 +70,25 @@
         })();
     </script>
     <script src="<?= $assetBase ?>/assets/js/ui.js"></script>
+    <script>
+        // Masquage dynamique des liens selon permissions
+        (function() {
+            fetch(window.APP_BASE + '/api/v1/auth/me', {
+                headers: {
+                    'Authorization': 'Bearer ' + (localStorage.getItem('api_token') || '')
+                }
+            }).then(r => r.ok ? r.json() : null).then(d => {
+                if (!d || !d.permissions) return;
+                var perms = d.permissions;
+                document.querySelectorAll('#mainNav a[data-entity]').forEach(function(a) {
+                    var ent = a.getAttribute('data-entity');
+                    var act = a.getAttribute('data-action') || 'view';
+                    var ok = false;
+                    if (perms['*'] && perms['*'][act]) ok = true;
+                    else if (perms[ent] && perms[ent][act]) ok = true;
+                    if (!ok) a.style.display = 'none';
+                });
+            }).catch(() => {});
+        })();
+    </script>
     <main class="container">

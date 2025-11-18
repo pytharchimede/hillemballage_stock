@@ -144,6 +144,114 @@ function requireRole(array $user, array $roles)
     }
 }
 
+// --- Permissions persistence (per-user granular) ---
+// Robust creation of user_permissions table with fallback (without FK if engine mismatch)
+function ensure_permissions_table(): void
+{
+    try {
+        $t = DB::query('SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "user_permissions"');
+        if ($t) return; // already exists
+        try {
+            DB::execute('CREATE TABLE user_permissions (
+                user_id INT NOT NULL,
+                entity VARCHAR(64) NOT NULL,
+                action VARCHAR(16) NOT NULL,
+                allowed TINYINT UNSIGNED NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, entity, action),
+                CONSTRAINT fk_user_permissions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+        } catch (\Throwable $e) {
+            // Fallback sans contrainte si FK/engine échoue
+            DB::execute('CREATE TABLE user_permissions (
+                user_id INT NOT NULL,
+                entity VARCHAR(64) NOT NULL,
+                action VARCHAR(16) NOT NULL,
+                allowed TINYINT UNSIGNED NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, entity, action)
+            )');
+        }
+    } catch (\Throwable $e) { /* ignore */
+    }
+}
+ensure_permissions_table();
+
+function loadExplicitPermissions(int $uid): array
+{
+    try {
+        $rows = DB::query('SELECT entity, action, allowed FROM user_permissions WHERE user_id=:u', [':u' => $uid]);
+        $m = [];
+        foreach ($rows as $r) {
+            if (!isset($m[$r['entity']])) $m[$r['entity']] = [];
+            $m[$r['entity']][$r['action']] = (bool)$r['allowed'];
+        }
+        return $m;
+    } catch (\Throwable $e) {
+        return [];
+    }
+}
+
+function mergeRoleDefaults(string $role, array $explicit): array
+{
+    if ($role === 'admin') return ['*' => ['view' => true, 'edit' => true, 'delete' => true]];
+    $defaults = [
+        'gerant' => [
+            'dashboard' => ['view' => true, 'export' => true],
+            'finance_stock' => ['view' => true, 'export' => true],
+            'stocks' => ['view' => true, 'edit' => true],
+            'transfers' => ['view' => true, 'edit' => true],
+            'orders' => ['view' => true, 'edit' => true],
+            'products' => ['view' => true],
+            'clients' => ['view' => true, 'edit' => true],
+            'collections' => ['view' => true],
+            'seller_rounds' => ['view' => true, 'edit' => true],
+            'reports' => ['view' => true, 'export' => true],
+            'audit' => ['view' => true],
+            'permissions' => ['view' => false, 'edit' => false]
+        ],
+        'livreur' => [
+            'dashboard' => ['view' => true],
+            'finance_stock' => ['view' => true],
+            'sales' => ['view' => true, 'edit' => true],
+            'clients' => ['view' => true, 'edit' => true],
+            'seller_rounds' => ['view' => true, 'edit' => true],
+            'products' => ['view' => true],
+        ],
+    ];
+    $base = $defaults[$role] ?? [];
+    // Merge explicit overriding defaults
+    foreach ($explicit as $ent => $acts) {
+        if (!isset($base[$ent])) $base[$ent] = [];
+        foreach ($acts as $a => $ok) {
+            $base[$ent][$a] = (bool)$ok;
+        }
+    }
+    return $base;
+}
+
+function userEffectivePermissions(array $u): array
+{
+    if (($u['role'] ?? '') === 'admin') return ['*' => ['view' => true, 'edit' => true, 'delete' => true, 'export' => true]];
+    $explicit = loadExplicitPermissions((int)($u['id'] ?? 0));
+    return mergeRoleDefaults((string)($u['role'] ?? ''), $explicit);
+}
+
+function userCan(array $u, string $entity, string $action): bool
+{
+    if (($u['role'] ?? '') === 'admin') return true;
+    $perms = userEffectivePermissions($u);
+    if (isset($perms['*'][$action]) && $perms['*'][$action]) return true;
+    return !empty($perms[$entity][$action]);
+}
+
+function requireUserCan(array $u, string $entity, string $action): void
+{
+    if (!userCan($u, $entity, $action)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Forbidden', 'entity' => $entity, 'action' => $action]);
+        exit;
+    }
+}
+
 function save_upload(string $field, string $subdir = 'uploads'): ?string
 {
     if (empty($_FILES[$field]) || ($_FILES[$field]['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
@@ -1799,6 +1907,7 @@ if (str_starts_with($path, '/api/v1')) {
     // Financial & Stock summary (point financier & stock)
     if ($path === '/api/v1/finance-stock' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $auth = requireAuth();
+        requireUserCan($auth, 'finance_stock', 'view');
         $role = (string)($auth['role'] ?? '');
         $userDepotId = (int)($auth['depot_id'] ?? 0);
         $paramDepot = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
@@ -1870,6 +1979,7 @@ if (str_starts_with($path, '/api/v1')) {
     // Finance & stock export CSV
     if ($path === '/api/v1/finance-stock/export' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $auth = requireAuth();
+        requireUserCan($auth, 'finance_stock', 'export');
         // Reuse API to gather
         $_SERVER['REQUEST_METHOD'] = 'GET';
         // recompute inline to avoid nested dispatch
@@ -1955,6 +2065,7 @@ if (str_starts_with($path, '/api/v1')) {
     // Finance & stock export PDF
     if ($path === '/api/v1/finance-stock/export-pdf' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $auth = requireAuth();
+        requireUserCan($auth, 'finance_stock', 'export');
         if (!class_exists('TCPDF')) {
             try {
                 @include_once __DIR__ . '/../vendor/tecnickcom/tcpdf/tcpdf.php';
@@ -2495,6 +2606,7 @@ if (str_starts_with($path, '/api/v1')) {
     // Dashboard export CSV
     if ($path === '/api/v1/dashboard/export' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $auth = requireAuth();
+        requireUserCan($auth, 'dashboard', 'export');
         $role = (string)($auth['role'] ?? '');
         $uid = (int)($auth['id'] ?? 0);
         $userDepotId = (int)($auth['depot_id'] ?? 0);
@@ -2695,6 +2807,7 @@ if (str_starts_with($path, '/api/v1')) {
     // Dashboard export PDF
     if ($path === '/api/v1/dashboard/export-pdf' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $auth = requireAuth();
+        requireUserCan($auth, 'dashboard', 'export');
         $role = (string)($auth['role'] ?? '');
         $uid = (int)($auth['id'] ?? 0);
         $userDepotId = (int)($auth['depot_id'] ?? 0);
@@ -2889,6 +3002,130 @@ if (str_starts_with($path, '/api/v1')) {
         }
         exit;
     }
+    // Permissions: current user info (for nav / frontend gating)
+    if ($path === '/api/v1/auth/me' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $auth = requireAuth();
+        $effective = userEffectivePermissions($auth);
+        echo json_encode([
+            'id' => (int)$auth['id'],
+            'name' => $auth['name'] ?? null,
+            'role' => $auth['role'] ?? null,
+            'permissions' => $effective
+        ]);
+        exit;
+    }
+    // List all permission entities/actions available
+    if ($path === '/api/v1/permissions/entities' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $auth = requireAuth();
+        requireUserCan($auth, 'permissions', 'view');
+        ensure_permissions_table();
+        $entities = [
+            'dashboard' => ['view', 'export'],
+            'finance_stock' => ['view', 'export'],
+            'stocks' => ['view', 'edit', 'delete'],
+            'transfers' => ['view', 'edit', 'delete'],
+            'orders' => ['view', 'edit', 'delete'],
+            'products' => ['view', 'edit', 'delete'],
+            'clients' => ['view', 'edit', 'delete'],
+            'collections' => ['view', 'edit', 'delete'],
+            'seller_rounds' => ['view', 'edit', 'delete'],
+            'reports' => ['view', 'export'],
+            'audit' => ['view'],
+            'permissions' => ['view', 'edit']
+        ];
+        echo json_encode(['entities' => $entities]);
+        exit;
+    }
+    // Users list (minimal) for permissions UI
+    if ($path === '/api/v1/users' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $auth = requireAuth();
+        if (!userCan($auth, 'users', 'view')) {
+            http_response_code(403);
+            echo json_encode(['error' => 'Forbidden']);
+            exit;
+        }
+        $limit = (int)($_GET['limit'] ?? 200);
+        if ($limit < 1 || $limit > 1000) $limit = 200;
+        $rows = DB::query('SELECT id,name,role FROM users ORDER BY name ASC LIMIT ' . $limit);
+        echo json_encode(['users' => $rows]);
+        exit;
+    }
+    // Get permissions for a specific user
+    if ($path === '/api/v1/permissions/user' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $auth = requireAuth();
+        requireUserCan($auth, 'permissions', 'view');
+        ensure_permissions_table();
+        $uid = (int)($_GET['user_id'] ?? 0);
+        if ($uid <= 0) {
+            http_response_code(422);
+            echo json_encode(['error' => 'user_id requis']);
+            exit;
+        }
+        $target = DB::query('SELECT id,name,role FROM users WHERE id=:id LIMIT 1', [":id" => $uid])[0] ?? null;
+        if (!$target) {
+            http_response_code(404);
+            echo json_encode(['error' => 'User not found']);
+            exit;
+        }
+        $explicit = loadExplicitPermissions($uid);
+        $effective = mergeRoleDefaults((string)($target['role'] ?? ''), $explicit);
+        echo json_encode(['user' => $target, 'explicit' => $explicit, 'effective' => $effective]);
+        exit;
+    }
+    // Update permissions for a user (bulk)
+    if ($path === '/api/v1/permissions/user' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $auth = requireAuth();
+        requireUserCan($auth, 'permissions', 'edit');
+        ensure_permissions_table();
+        $raw = file_get_contents('php://input');
+        $payload = json_decode($raw, true);
+        if (!$payload) {
+            http_response_code(400);
+            echo json_encode(['error' => 'JSON invalide']);
+            exit;
+        }
+        $uid = (int)($payload['user_id'] ?? 0);
+        $changes = $payload['changes'] ?? [];
+        if ($uid <= 0 || !is_array($changes)) {
+            http_response_code(422);
+            echo json_encode(['error' => 'Paramètres invalides']);
+            exit;
+        }
+        $exists = DB::query('SELECT id, role FROM users WHERE id=:id LIMIT 1', [":id" => $uid])[0] ?? null;
+        if (!$exists) {
+            http_response_code(404);
+            echo json_encode(['error' => 'User not found']);
+            exit;
+        }
+        try {
+            foreach ($changes as $c) {
+                $entity = trim($c['entity'] ?? '');
+                $action = trim($c['action'] ?? '');
+                $allowed = !empty($c['allowed']) ? 1 : 0;
+                if ($entity === '' || $action === '') continue;
+                // Backticks to avoid reserved word conflicts
+                DB::execute('REPLACE INTO `user_permissions`(`user_id`,`entity`,`action`,`allowed`) VALUES(:u,:e,:a,:al)', [
+                    ':u' => $uid,
+                    ':e' => $entity,
+                    ':a' => $action,
+                    ':al' => $allowed
+                ]);
+            }
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            echo json_encode(['error' => 'Erreur sauvegarde', 'details' => $e->getMessage()]);
+            exit;
+        }
+        $explicit = loadExplicitPermissions($uid);
+        $effective = mergeRoleDefaults((string)($exists['role'] ?? ''), $explicit);
+        // Audit
+        try {
+            audit_log((int)$auth['id'], 'edit', 'permissions', $uid, $path, 'POST', $changes);
+        } catch (\Throwable $e) {
+        }
+        echo json_encode(['ok' => true, 'explicit' => $explicit, 'effective' => $effective]);
+        exit;
+    }
     // API fallback 404
     http_response_code(404);
     echo json_encode(['error' => 'Not found']);
@@ -2910,6 +3147,28 @@ if ($path === '/' || $path === '/dashboard') {
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/dashboard.php';
     include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+// Permissions admin page
+if ($path === '/permissions') {
+    if (empty($_SESSION['user_id'])) {
+        header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
+        exit;
+    }
+    $uid = (int)$_SESSION['user_id'];
+    $urow = DB::query('SELECT id,role FROM users WHERE id=:id LIMIT 1', [":id" => $uid])[0] ?? null;
+    $canView = false;
+    if ($urow && ($urow['role'] === 'admin')) $canView = true;
+    else {
+        $perms = userEffectivePermissions($urow ?: ['id' => $uid, 'role' => null]);
+        $canView = !empty($perms['permissions']['view']);
+    }
+    if (!$canView) {
+        http_response_code(403);
+        echo 'Accès refusé';
+        exit;
+    }
+    include __DIR__ . '/../views/permissions.php';
     exit;
 }
 
@@ -3335,8 +3594,19 @@ if ($path === '/users/export') {
     exit;
 }
 
-// Stock transfers page
-if ($path === '/transfers') {
+// Stock transfers page (alias: /transfers and /transferts)
+if ($path === '/transfers' || $path === '/transferts') {
+    if (empty($_SESSION['user_id'])) {
+        header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
+        exit;
+    }
+    $uid = (int)$_SESSION['user_id'];
+    $urow = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+    if (!$urow || !userCan($urow, 'transfers', 'view')) {
+        http_response_code(403);
+        echo 'Accès refusé';
+        exit;
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/transfers.php';
     include __DIR__ . '/../views/layout/footer.php';
