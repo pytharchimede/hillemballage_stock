@@ -77,7 +77,7 @@
   async function loadProducts() {
     try {
       const dep = parseInt(elDepot.value, 10) || "";
-      const q = dep ? "?depot_id=" + dep : "";
+      const q = dep ? `?depot_id=${dep}&only_in_stock=1` : "";
       const r = await fetch(BASE + "/api/v1/products" + q, {
         headers: authHeaders(),
       });
@@ -89,8 +89,18 @@
         const stock = p.stock_depot ?? p.stock_total ?? 0;
         o.textContent = `${p.name} (stock:${stock})`;
         o.dataset.stock = String(stock);
-        elProduct.appendChild(o);
+        if (dep) {
+          elProduct.appendChild(o);
+        } else if (stock > 0) {
+          elProduct.appendChild(o);
+        }
       });
+      if (!elProduct.options.length) {
+        const ph = document.createElement("option");
+        ph.value = "";
+        ph.textContent = "Aucun produit en stock";
+        elProduct.appendChild(ph);
+      }
     } catch (_) {}
   }
 
@@ -255,7 +265,9 @@
     btnCancel.addEventListener("click", () => dlg.remove());
 
     // Load items from open list cache by refetching just that round
-    fetch(`/api/v1/seller-rounds?status=open`, { headers: authHeaders() })
+    fetch(BASE + `/api/v1/seller-rounds?status=open`, {
+      headers: authHeaders(),
+    })
       .then((r) => r.json())
       .then((rows) => rows.find((x) => x.id === roundId))
       .then((r) => {
@@ -293,7 +305,7 @@
       });
       const cash = parseInt(dlg.querySelector("#close-cash").value, 10) || 0;
       try {
-        const r = await fetch(`/api/v1/seller-rounds/${roundId}`, {
+        const r = await fetch(BASE + `/api/v1/seller-rounds/${roundId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json", ...authHeaders() },
           body: JSON.stringify({ returns, cash_turned_in: cash }),

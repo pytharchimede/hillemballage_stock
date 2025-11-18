@@ -701,6 +701,7 @@ if (str_starts_with($path, '/api/v1')) {
         requireAuth();
         $q = trim($_GET['q'] ?? '');
         $depId = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
+        $onlyInStock = isset($_GET['only_in_stock']) && $_GET['only_in_stock'] !== '' ? ($_GET['only_in_stock'] === '1') : false;
         $params = [];
         if ($depId !== null) {
             $params[':dep'] = $depId;
@@ -711,15 +712,25 @@ if (str_starts_with($path, '/api/v1')) {
         if ($q !== '') {
             $like = '%' . $q . '%';
             $params[':q'] = $like;
-            $rows = DB::query('SELECT p.id,p.name,p.sku,p.unit_price,p.description,p.image_path,p.active,
+            $sql = 'SELECT p.id,p.name,p.sku,p.unit_price,p.description,p.image_path,p.active,
                 (SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id = p.id) AS stock_total,
                 ' . $stockDepotExpr . ' AS stock_depot
-                FROM products p WHERE p.name LIKE :q OR p.sku LIKE :q ORDER BY p.id DESC', $params);
+                FROM products p WHERE (p.name LIKE :q OR p.sku LIKE :q)';
+            if ($depId !== null && $onlyInStock) {
+                $sql .= ' AND (SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id = p.id AND s.depot_id = :dep) > 0';
+            }
+            $sql .= ' ORDER BY p.id DESC';
+            $rows = DB::query($sql, $params);
         } else {
-            $rows = DB::query('SELECT p.id,p.name,p.sku,p.unit_price,p.description,p.image_path,p.active,
+            $sql = 'SELECT p.id,p.name,p.sku,p.unit_price,p.description,p.image_path,p.active,
                 (SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id = p.id) AS stock_total,
                 ' . $stockDepotExpr . ' AS stock_depot
-                FROM products p ORDER BY p.id DESC', $params);
+                FROM products p';
+            if ($depId !== null && $onlyInStock) {
+                $sql .= ' WHERE (SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id = p.id AND s.depot_id = :dep) > 0';
+            }
+            $sql .= ' ORDER BY p.id DESC';
+            $rows = DB::query($sql, $params);
         }
         echo json_encode($rows);
         exit;
@@ -2036,6 +2047,10 @@ if (str_starts_with($path, '/api/v1')) {
         ensure_seller_rounds_tables();
         $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
         $depotId = (int)($data['depot_id'] ?? 0);
+        if ($depotId <= 0) {
+            // fallback to user's depot when not provided, per UI guidance
+            $depotId = (int)($u['depot_id'] ?? 0);
+        }
         $sellerId = (int)($data['user_id'] ?? 0);
         $items = $data['items'] ?? [];
         if ($depotId <= 0 || $sellerId <= 0 || !is_array($items) || count($items) === 0) {
@@ -3036,6 +3051,22 @@ if ($path === '/transfers') {
 if ($path === '/stocks') {
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/stocks.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+
+// Quick Sales page (Vente rapide livreur)
+if ($path === '/sales-quick') {
+    if (empty($_SESSION['user_id'])) {
+        header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
+        exit;
+    }
+    try {
+        audit_log((int)$_SESSION['user_id'], 'view', 'sales_quick', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/sales_quick.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }
