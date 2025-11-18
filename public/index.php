@@ -885,10 +885,11 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode($rows);
         exit;
     }
+    // Create user (admin/editor)
     if ($path === '/api/v1/users' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $u = requireAuth();
         requirePermission($u, 'users', 'edit');
-        // Colonnes garanties
+        // Ensure columns exist
         try {
             $cols = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="users"');
             $havePhoto = false;
@@ -897,22 +898,18 @@ if (str_starts_with($path, '/api/v1')) {
                 if ($c['COLUMN_NAME'] === 'photo_path') $havePhoto = true;
                 if ($c['COLUMN_NAME'] === 'active') $haveActive = true;
             }
-            if (!$havePhoto) {
-                DB::execute('ALTER TABLE users ADD COLUMN photo_path VARCHAR(255) NULL AFTER permissions');
-            }
-            if (!$haveActive) {
-                DB::execute('ALTER TABLE users ADD COLUMN active TINYINT UNSIGNED NOT NULL DEFAULT 1 AFTER photo_path');
-            }
-        } catch (\Throwable $e) { /* ignore */
+            if (!$havePhoto) DB::execute('ALTER TABLE users ADD COLUMN photo_path VARCHAR(255) NULL AFTER permissions');
+            if (!$haveActive) DB::execute('ALTER TABLE users ADD COLUMN active TINYINT UNSIGNED NOT NULL DEFAULT 1 AFTER photo_path');
+        } catch (\Throwable $e) {
         }
         $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
-        // Validation email
+        // Validate email
         if (empty($data['email']) || !filter_var($data['email'], FILTER_VALIDATE_EMAIL)) {
             http_response_code(422);
             echo json_encode(['error' => 'Email invalide']);
             exit;
         }
-        // Unicité email
+        // Unique email
         $exists = DB::query('SELECT id FROM users WHERE email=:e LIMIT 1', [':e' => $data['email']]);
         if ($exists) {
             http_response_code(409);
@@ -926,9 +923,175 @@ if (str_starts_with($path, '/api/v1')) {
             $up = save_upload('photo', 'uploads');
             if ($up) $photo = $up;
         }
-        DB::execute('INSERT INTO users(name,email,password_hash,role,depot_id,permissions,photo_path,active,created_at) VALUES(:n,:e,:h,:r,:d,:p,:ph,1,NOW())', [':n' => $data['name'] ?? 'User', ':e' => $data['email'] ?? '', ':h' => $hash, ':r' => $data['role'] ?? 'gerant', ':d' => (int)($data['depot_id'] ?? 1), ':p' => $permsJson, ':ph' => $photo]);
+        DB::execute('INSERT INTO users(name,email,password_hash,role,depot_id,permissions,photo_path,active,created_at) VALUES(:n,:e,:h,:r,:d,:p,:ph,1,NOW())', [
+            ':n' => $data['name'] ?? 'User',
+            ':e' => $data['email'] ?? '',
+            ':h' => $hash,
+            ':r' => $data['role'] ?? 'gerant',
+            ':d' => (int)($data['depot_id'] ?? 1),
+            ':p' => $permsJson,
+            ':ph' => $photo
+        ]);
         $newId = (int)DB::query('SELECT LAST_INSERT_ID() id')[0]['id'];
         echo json_encode(['created' => true, 'id' => $newId, 'photo_path' => $photo]);
+        exit;
+    }
+    if ($path === '/api/v1/summary' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $auth = requireAuth();
+        $role = (string)($auth['role'] ?? '');
+        $uid = (int)($auth['id'] ?? 0);
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
+        $days = (int)($_GET['days'] ?? 30);
+        if (!in_array($days, [7, 30, 90], true)) $days = 30;
+        $paramDepot = isset($_GET['depot_id']) ? (int)$_GET['depot_id'] : null;
+
+        // Scope helpers (sales)
+        $salesWhere = [];
+        $salesParams = [];
+        if ($role === 'admin') {
+            // admin may focus a specific depot if provided
+            if ($paramDepot && $paramDepot > 0) {
+                $salesWhere[] = 'depot_id = :dep';
+                $salesParams[':dep'] = $paramDepot;
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $salesWhere[] = 'depot_id = :dep';
+            $salesParams[':dep'] = $userDepotId;
+        } else {
+            $salesWhere[] = 'user_id = :uid';
+            $salesParams[':uid'] = $uid;
+        }
+        $salesScopeSql = $salesWhere ? (' WHERE ' . implode(' AND ', $salesWhere)) : '';
+
+        // Scope helpers (stocks)
+        $stockWhere = [];
+        $stockParams = [];
+        if ($role === 'admin') {
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $stockWhere[] = 's.depot_id = :dep';
+            $stockParams[':dep'] = $userDepotId;
+        } else {
+            // pas de contrainte claire pour stocks par utilisateur, laisser vide
+        }
+        $stockScopeSql = $stockWhere ? (' WHERE ' . implode(' AND ', $stockWhere)) : '';
+
+        // Stock KPIs
+        $stockTotal = (int)(DB::query('SELECT COALESCE(SUM(quantity),0) qty FROM stocks s' . ($stockScopeSql ? $stockScopeSql : ''))[0]['qty'] ?? 0);
+        $stockLines = DB::query('SELECT COALESCE(SUM(s.quantity),0) quantity, p.name FROM products p LEFT JOIN stocks s ON s.product_id=p.id' . ($stockScopeSql ? $stockScopeSql : '') . ' GROUP BY p.id,p.name ORDER BY quantity DESC LIMIT 10', $stockParams);
+
+        // Top soldes clients (créances) dans le scope
+        $topBalances = DB::query('SELECT c.id, c.name, (SUM(s.total_amount) - SUM(s.amount_paid)) AS balance FROM sales s JOIN clients c ON c.id = s.client_id' . $salesScopeSql . ' GROUP BY c.id,c.name HAVING balance > 0 ORDER BY balance DESC LIMIT 5', $salesParams);
+
+        // Encours total (receivables)
+        $receivablesTotal = (int)(DB::query('SELECT COALESCE(SUM(total_amount - amount_paid),0) v FROM sales' . $salesScopeSql, $salesParams)[0]['v'] ?? 0);
+
+        // Daily detailed (use user depot if available, else 1)
+        $today = date('Y-m-d');
+        $dailyDepot = $userDepotId > 0 ? $userDepotId : 1;
+        $daily = ReportService::daily($dailyDepot, $today);
+
+        // Quick stats (today)
+        $sqlBaseToday = ' FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' DATE(sold_at)=CURDATE()';
+        $caToday = (int)(DB::query('SELECT COALESCE(SUM(total_amount),0) v' . $sqlBaseToday, $salesParams)[0]['v'] ?? 0);
+        $salesToday = (int)(DB::query('SELECT COUNT(*) c' . $sqlBaseToday, $salesParams)[0]['c'] ?? 0);
+        $activeClients30 = (int)(DB::query('SELECT COUNT(DISTINCT client_id) c FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)', $salesParams)[0]['c'] ?? 0);
+
+        // Sparkline last 7 days revenue (scope)
+        $sparkRows = DB::query('SELECT DATE(sold_at) d, SUM(total_amount) v FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' sold_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY) GROUP BY DATE(sold_at) ORDER BY d ASC', $salesParams);
+        $map7 = [];
+        foreach ($sparkRows as $r) {
+            $map7[$r['d']] = (int)$r['v'];
+        }
+        $spark = [];
+        for ($i = 6; $i >= 0; $i--) {
+            $dt = date('Y-m-d', strtotime("-{$i} day"));
+            $spark[] = ['date' => $dt, 'value' => ($map7[$dt] ?? 0)];
+        }
+
+        // Revenue last 30 days (scope)
+        $rows30 = DB::query('SELECT DATE(sold_at) d, SUM(total_amount) v FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' sold_at >= DATE_SUB(CURDATE(), INTERVAL ' . ($days - 1) . ' DAY) GROUP BY DATE(sold_at) ORDER BY d ASC', $salesParams);
+        $map30 = [];
+        foreach ($rows30 as $r) {
+            $map30[$r['d']] = (int)$r['v'];
+        }
+        $series30 = [];
+        for ($i = $days - 1; $i >= 0; $i--) {
+            $dt = date('Y-m-d', strtotime("-{$i} day"));
+            $series30[] = ['date' => $dt, 'value' => ($map30[$dt] ?? 0)];
+        }
+
+        // Top products by revenue (30d)
+        $topProducts = DB::query('SELECT p.name, SUM(si.subtotal) total FROM sale_items si JOIN sales s ON s.id=si.sale_id JOIN products p ON p.id=si.product_id' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' s.sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY p.id,p.name ORDER BY total DESC LIMIT 10', $salesParams);
+
+        // Low stock products (<= threshold)
+        $threshold = 5;
+        $lowStock = DB::query('SELECT p.id, p.name, COALESCE(SUM(s.quantity),0) qty FROM products p LEFT JOIN stocks s ON s.product_id=p.id' . ($stockScopeSql ? $stockScopeSql : '') . ' GROUP BY p.id,p.name HAVING qty <= :th ORDER BY qty ASC, p.name ASC LIMIT 10', $stockParams + [':th' => $threshold]);
+
+        // Orders status distribution (global or scope-agnostic)
+        $ordersStatus = DB::query('SELECT status, COUNT(*) c FROM orders GROUP BY status');
+
+        // Top users by sales (30d, scoped by depot if needed)
+        $byUser = DB::query('SELECT u.id, u.name, SUM(s.total_amount) total FROM sales s JOIN users u ON u.id=s.user_id' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' s.sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY u.id,u.name ORDER BY total DESC LIMIT 5', $salesParams);
+
+        // Latest sales (10)
+        $latest = DB::query('SELECT s.id, c.name AS client_name, s.total_amount, s.sold_at, s.depot_id FROM sales s LEFT JOIN clients c ON c.id=s.client_id' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' s.sold_at IS NOT NULL ORDER BY s.sold_at DESC LIMIT 10', $salesParams);
+
+        // Visibility (coarse-grained)
+        $visibility = [
+            'finance' => ($role === 'admin' || $role === 'gerant'),
+            'clients' => (function () use ($auth) {
+                try {
+                    return can($auth, 'clients', 'view');
+                } catch (\Throwable $e) {
+                    return true;
+                }
+            })(),
+            'stocks' => (function () use ($auth) {
+                try {
+                    return can($auth, 'products', 'view');
+                } catch (\Throwable $e) {
+                    return true;
+                }
+            })(),
+            'orders' => (function () use ($auth) {
+                try {
+                    return can($auth, 'orders', 'view');
+                } catch (\Throwable $e) {
+                    return true;
+                }
+            })(),
+            'users' => (function () use ($auth) {
+                try {
+                    return can($auth, 'users', 'view');
+                } catch (\Throwable $e) {
+                    return false;
+                }
+            })(),
+            'audit' => ($role === 'admin'),
+            'role' => $role
+        ];
+
+        echo json_encode([
+            'stock_total' => (int)$stockTotal,
+            'stock_items' => $stockLines,
+            'top_balances' => $topBalances,
+            'daily' => $daily,
+            'quick_stats' => [
+                'ca_today' => $caToday,
+                'sales_today' => $salesToday,
+                'active_clients' => $activeClients30,
+                'receivables_total' => $receivablesTotal,
+                'window' => '30d'
+            ],
+            'sparkline' => $spark,
+            'revenue_30d' => $series30,
+            'top_products_30d' => $topProducts,
+            'low_stock' => $lowStock,
+            'orders_status' => $ordersStatus,
+            'sales_by_user_30d' => $byUser,
+            'latest_sales' => $latest,
+            'visibility' => $visibility
+        ]);
         exit;
     }
     if (preg_match('#^/api/v1/users/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
