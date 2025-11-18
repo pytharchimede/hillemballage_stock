@@ -35,6 +35,7 @@ $id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
                     <option value="gerant">Gérant</option>
                     <option value="livreur">Livreur</option>
                 </select>
+                <button type="button" id="apply_role_defaults" class="btn secondary" style="margin-top:.5rem">Appliquer les droits du rôle</button>
             </div>
             <div class="form-field">
                 <label for="u_depot">Dépôt</label>

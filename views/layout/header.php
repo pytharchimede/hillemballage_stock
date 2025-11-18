@@ -11,6 +11,13 @@
     $assetBase = preg_replace('#/public$#', '', $scriptDir); // ex: /hill_new
     ?>
     <link rel="stylesheet" href="<?= $assetBase ?>/assets/css/app.css">
+    <meta name="app-base" content="<?= htmlspecialchars($routeBase) ?>">
+    <style>
+        /* Masquer les liens sensibles avant calcul des permissions (évite le flash) */
+        #mainNav a[data-entity] {
+            display: none;
+        }
+    </style>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 </head>
 
@@ -43,52 +50,8 @@
             </div>
         </nav>
     </header>
-    <script>
-        window.APP_BASE = <?= json_encode($routeBase) ?>;
-    </script>
+    <!-- APP_BASE rendu via meta[name=app-base] pour éviter les scripts inline -->
     <div class="toast-container" aria-live="polite" aria-atomic="true"></div>
-    <script>
-        (function() {
-            var t = document.getElementById('navToggle');
-            if (!t) return;
-            var n = document.getElementById('mainNav');
-            t.addEventListener('click', function() {
-                n.classList.toggle('open');
-            });
-        })();
-        (function syncToken() {
-            try {
-                var name = 'api_token';
-                var parts = ('; ' + document.cookie).split('; ' + name + '=');
-                if (parts.length === 2) {
-                    var token = parts.pop().split(';').shift();
-                    if (token && !localStorage.getItem('api_token')) {
-                        localStorage.setItem('api_token', token);
-                    }
-                }
-            } catch (e) {}
-        })();
-    </script>
     <script src="<?= $assetBase ?>/assets/js/ui.js"></script>
-    <script>
-        // Masquage dynamique des liens selon permissions
-        (function() {
-            fetch(window.APP_BASE + '/api/v1/auth/me', {
-                headers: {
-                    'Authorization': 'Bearer ' + (localStorage.getItem('api_token') || '')
-                }
-            }).then(r => r.ok ? r.json() : null).then(d => {
-                if (!d || !d.permissions) return;
-                var perms = d.permissions;
-                document.querySelectorAll('#mainNav a[data-entity]').forEach(function(a) {
-                    var ent = a.getAttribute('data-entity');
-                    var act = a.getAttribute('data-action') || 'view';
-                    var ok = false;
-                    if (perms['*'] && perms['*'][act]) ok = true;
-                    else if (perms[ent] && perms[ent][act]) ok = true;
-                    if (!ok) a.style.display = 'none';
-                });
-            }).catch(() => {});
-        })();
-    </script>
+    <script src="<?= $assetBase ?>/assets/js/nav.js"></script>
     <main class="container">

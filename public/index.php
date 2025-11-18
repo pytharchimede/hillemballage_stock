@@ -2160,46 +2160,7 @@ if (str_starts_with($path, '/api/v1')) {
         }
         exit;
     }
-    // Summary endpoint (aggregated for dashboard)
-    if ($path === '/api/v1/summary' && $_SERVER['REQUEST_METHOD'] === 'GET') {
-        requireAuth();
-        $stockTotal = DB::query('SELECT COALESCE(SUM(quantity),0) qty FROM stocks')[0]['qty'] ?? 0;
-        $stockLines = DB::query('SELECT s.quantity, p.name FROM stocks s JOIN products p ON p.id=s.product_id ORDER BY s.quantity DESC LIMIT 10');
-        $topBalances = DB::query('SELECT c.id, c.name, (SUM(s.total_amount) - SUM(s.amount_paid)) AS balance FROM sales s JOIN clients c ON c.id = s.client_id GROUP BY c.id,c.name HAVING balance > 0 ORDER BY balance DESC LIMIT 5');
-        $today = date('Y-m-d');
-        $daily = ReportService::daily(1, $today); // depot 1 par défaut
-
-        // Quick stats
-        $caToday = (int)(DB::query('SELECT COALESCE(SUM(total_amount),0) v FROM sales WHERE DATE(sold_at)=CURDATE()')[0]['v'] ?? 0);
-        $salesToday = (int)(DB::query('SELECT COUNT(*) c FROM sales WHERE DATE(sold_at)=CURDATE()')[0]['c'] ?? 0);
-        $activeClients30 = (int)(DB::query('SELECT COUNT(DISTINCT client_id) c FROM sales WHERE sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)')[0]['c'] ?? 0);
-        // Sparkline last 7 days revenue (ensure 7 points)
-        $rows = DB::query('SELECT DATE(sold_at) d, SUM(total_amount) v FROM sales WHERE sold_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY) GROUP BY DATE(sold_at) ORDER BY d ASC');
-        $map = [];
-        foreach ($rows as $r) {
-            $map[$r['d']] = (int)$r['v'];
-        }
-        $spark = [];
-        for ($i = 6; $i >= 0; $i--) {
-            $dt = date('Y-m-d', strtotime("-$i day"));
-            $spark[] = ['date' => $dt, 'value' => ($map[$dt] ?? 0)];
-        }
-
-        echo json_encode([
-            'stock_total' => (int)$stockTotal,
-            'stock_items' => $stockLines,
-            'top_balances' => $topBalances,
-            'daily' => $daily,
-            'quick_stats' => [
-                'ca_today' => $caToday,
-                'sales_today' => $salesToday,
-                'active_clients' => $activeClients30,
-                'window' => '30d'
-            ],
-            'sparkline' => $spark
-        ]);
-        exit;
-    }
+    // (removed) duplicate /api/v1/summary without permission scoping
     // Audit logs listing (admin)
     if ($path === '/api/v1/audit-logs' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $u = requireAuth();
@@ -3134,14 +3095,20 @@ if (str_starts_with($path, '/api/v1')) {
 
 // Web pages
 if ($path === '/' || $path === '/dashboard') {
-    // Enforce login
     if (empty($_SESSION['user_id'])) {
         header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
         exit;
     }
-    // Audit: vue dashboard
+    // Enforce permission dashboard:view
+    $uid = (int)$_SESSION['user_id'];
+    $urow = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+    if (!$urow || !userCan($urow, 'dashboard', 'view')) {
+        http_response_code(403);
+        echo 'Accès refusé';
+        exit;
+    }
     try {
-        audit_log((int)$_SESSION['user_id'], 'view', 'dashboard', null, $path, 'GET');
+        audit_log($uid, 'view', 'dashboard', null, $path, 'GET');
     } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
@@ -3225,6 +3192,15 @@ if ($path === '/depots/map') {
 
 // Admin pages (simple CRUD)
 if ($path === '/products') {
+    if (!empty($_SESSION['user_id'])) {
+        $uid = (int)$_SESSION['user_id'];
+        $u = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+        if (!$u || !userCan($u, 'products', 'view')) {
+            http_response_code(403);
+            echo 'Accès refusé';
+            exit;
+        }
+    }
     try {
         if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'products', null, $path, 'GET');
     } catch (\Throwable $e) {
@@ -3265,6 +3241,15 @@ if ($path === '/products/view') {
     exit;
 }
 if ($path === '/clients') {
+    if (!empty($_SESSION['user_id'])) {
+        $uid = (int)$_SESSION['user_id'];
+        $u = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+        if (!$u || !userCan($u, 'clients', 'view')) {
+            http_response_code(403);
+            echo 'Accès refusé';
+            exit;
+        }
+    }
     try {
         if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'clients', null, $path, 'GET');
     } catch (\Throwable $e) {
@@ -3353,6 +3338,15 @@ if ($path === '/users/edit') {
     exit;
 }
 if ($path === '/depots') {
+    if (!empty($_SESSION['user_id'])) {
+        $uid = (int)$_SESSION['user_id'];
+        $u = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+        if (!$u || !userCan($u, 'depots', 'view')) {
+            http_response_code(403);
+            echo 'Accès refusé';
+            exit;
+        }
+    }
     try {
         if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'depots', null, $path, 'GET');
     } catch (\Throwable $e) {
@@ -3383,6 +3377,15 @@ if ($path === '/depots/edit') {
     exit;
 }
 if ($path === '/orders') {
+    if (!empty($_SESSION['user_id'])) {
+        $uid = (int)$_SESSION['user_id'];
+        $u = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+        if (!$u || !userCan($u, 'orders', 'view')) {
+            http_response_code(403);
+            echo 'Accès refusé';
+            exit;
+        }
+    }
     try {
         if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'orders', null, $path, 'GET');
     } catch (\Throwable $e) {
@@ -3615,6 +3618,15 @@ if ($path === '/transfers' || $path === '/transferts') {
 
 // Stocks by depot page
 if ($path === '/stocks') {
+    if (!empty($_SESSION['user_id'])) {
+        $uid = (int)$_SESSION['user_id'];
+        $u = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+        if (!$u || !userCan($u, 'stocks', 'view')) {
+            http_response_code(403);
+            echo 'Accès refusé';
+            exit;
+        }
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/stocks.php';
     include __DIR__ . '/../views/layout/footer.php';
@@ -3625,6 +3637,14 @@ if ($path === '/stocks') {
 if ($path === '/sales-quick') {
     if (empty($_SESSION['user_id'])) {
         header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
+        exit;
+    }
+    // sales:view requis
+    $uid = (int)$_SESSION['user_id'];
+    $u = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+    if (!$u || !userCan($u, 'sales', 'view')) {
+        http_response_code(403);
+        echo 'Accès refusé';
         exit;
     }
     try {
@@ -3643,6 +3663,14 @@ if ($path === '/finance-stock') {
         header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
         exit;
     }
+    // finance_stock:view requis
+    $uid = (int)$_SESSION['user_id'];
+    $u = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+    if (!$u || !userCan($u, 'finance_stock', 'view')) {
+        http_response_code(403);
+        echo 'Accès refusé';
+        exit;
+    }
     try {
         audit_log((int)$_SESSION['user_id'], 'view', 'finance_stock', null, $path, 'GET');
     } catch (\Throwable $e) {
@@ -3659,6 +3687,13 @@ if ($path === '/seller-rounds') {
         header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
         exit;
     }
+    $uid = (int)$_SESSION['user_id'];
+    $u = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+    if (!$u || !userCan($u, 'seller_rounds', 'view')) {
+        http_response_code(403);
+        echo 'Accès refusé';
+        exit;
+    }
     try {
         audit_log((int)$_SESSION['user_id'], 'view', 'seller_rounds', null, $path, 'GET');
     } catch (\Throwable $e) {
@@ -3673,6 +3708,13 @@ if ($path === '/seller-rounds') {
 if ($path === '/collections') {
     if (empty($_SESSION['user_id'])) {
         header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
+        exit;
+    }
+    $uid = (int)$_SESSION['user_id'];
+    $u = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+    if (!$u || !userCan($u, 'collections', 'view')) {
+        http_response_code(403);
+        echo 'Accès refusé';
         exit;
     }
     try {

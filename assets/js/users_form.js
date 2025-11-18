@@ -7,6 +7,7 @@
   const nameEl = document.getElementById("u_name");
   const emailEl = document.getElementById("u_email");
   const roleEl = document.getElementById("u_role");
+  const applyRoleBtn = document.getElementById("apply_role_defaults");
   const depotEl = document.getElementById("u_depot");
   const pwField = document.getElementById("pw-field");
   const dz = document.getElementById("user-photo-dropzone");
@@ -60,6 +61,57 @@
       const on = perms[ent] && !!perms[ent][act];
       cb.checked = !!on;
     });
+  }
+
+  // Définitions par rôle (alignées avec le backend, adaptées aux entités visibles du formulaire)
+  function defaultPermsForRole(role) {
+    const ents = [
+      "clients",
+      "products",
+      "depots",
+      "stocks",
+      "transfers",
+      "orders",
+      "sales",
+      "users",
+      "reports",
+    ];
+    const base = {};
+    ents.forEach(
+      (e) => (base[e] = { view: false, edit: false, delete: false })
+    );
+    if (role === "admin") {
+      ents.forEach((e) => (base[e] = { view: true, edit: true, delete: true }));
+      return base;
+    }
+    if (role === "gerant") {
+      base.clients = { view: true, edit: true, delete: false };
+      base.products = { view: true, edit: false, delete: false };
+      base.depots = { view: true, edit: false, delete: false };
+      base.stocks = { view: true, edit: true, delete: false };
+      base.transfers = { view: true, edit: true, delete: false };
+      base.orders = { view: true, edit: true, delete: false };
+      base.sales = { view: true, edit: true, delete: false };
+      base.users = { view: false, edit: false, delete: false };
+      base.reports = { view: true, edit: false, delete: false };
+      return base;
+    }
+    // livreur
+    base.clients = { view: true, edit: true, delete: false };
+    base.products = { view: true, edit: false, delete: false };
+    base.depots = { view: false, edit: false, delete: false };
+    base.stocks = { view: false, edit: false, delete: false };
+    base.transfers = { view: false, edit: false, delete: false };
+    base.orders = { view: false, edit: false, delete: false };
+    base.sales = { view: true, edit: true, delete: false };
+    base.users = { view: false, edit: false, delete: false };
+    base.reports = { view: false, edit: false, delete: false };
+    return base;
+  }
+
+  function applyRoleDefaults(role) {
+    const defaults = defaultPermsForRole(role);
+    applyPermissions(defaults);
   }
 
   async function loadDepots() {
@@ -285,6 +337,21 @@
           /* en édition, mdp optionnel */
         }
       });
+    } else {
+      // Création: auto-appliquer les droits du rôle sélectionné par défaut
+      applyRoleDefaults(roleEl.value || "gerant");
     }
   });
+
+  // Sur changement de rôle, en création on auto-applique; en édition, proposer via bouton
+  if (roleEl) {
+    roleEl.addEventListener("change", function () {
+      if (!userId) applyRoleDefaults(roleEl.value);
+    });
+  }
+  if (applyRoleBtn) {
+    applyRoleBtn.addEventListener("click", function () {
+      applyRoleDefaults(roleEl.value || "gerant");
+    });
+  }
 })();
