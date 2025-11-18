@@ -175,3 +175,15 @@ input.form-control { min-height:44px }
 .card-client .cl-phone { color:#444; font-weight:600; }
 .card-client .cl-actions { padding:.6rem 1rem .9rem; border-top:1px solid #eee; display:flex; gap:.5rem; justify-content:center }
 .card-client .btn[disabled], .card-client .btn[aria-disabled="true"]{ opacity:.5; pointer-events:none }
+
+/* --- Logs page UI --- */
+.filters.toolbar{ display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:.6rem; align-items:end; margin:.5rem 0 1rem }
+.filters.toolbar .filter-row{ display:flex; flex-direction:column; gap:.25rem }
+.form-control.compact{ min-height:36px; padding:.45rem .6rem; font-size:.9rem }
+.btn.small{ padding:6px 10px; font-size:.9rem }
+.pager{ display:flex; gap:.5rem; align-items:center; margin-top:.75rem }
+.table{ width:100%; border-collapse:collapse; background:#fff; border:1px solid #eee; border-radius:10px; overflow:hidden }
+.table thead th{ background:#fafafa; text-align:left; font-weight:700; padding:.6rem .7rem; border-bottom:1px solid #eee; white-space:nowrap }
+.table tbody td{ padding:.55rem .7rem; border-bottom:1px solid #f1f1f1; font-size:.95rem }
+.table tbody tr:hover{ background:#fffdf5 }
+.table-responsive{ width:100%; overflow:auto }

@@ -27,6 +27,7 @@
             <a href="<?= $routeBase ?>/orders">Commandes</a>
             <a href="<?= $routeBase ?>/transfers">Transferts</a>
             <a href="<?= $routeBase ?>/users">Utilisateurs</a>
+            <a href="<?= $routeBase ?>/logs">Logs</a>
             <?php if (!empty($_SESSION['user_id'])): ?>
                 <span class="user">👤 <?= htmlspecialchars($_SESSION['user_name'] ?? 'Utilisateur') ?></span>
                 <a href="<?= $routeBase ?>/logout" class="btn logout">Déconnexion</a>

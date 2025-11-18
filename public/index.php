@@ -160,6 +160,58 @@ function save_upload(string $field, string $subdir = 'uploads'): ?string
     return ($base && $base !== '/' ? $base : '') . $web;
 }
 
+// --- Audit logging helpers ---
+function ensure_audit_table(): void
+{
+    try {
+        DB::execute('CREATE TABLE IF NOT EXISTS audit_logs (
+            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            actor_user_id INT UNSIGNED NULL,
+            action VARCHAR(32) NOT NULL,
+            entity VARCHAR(64) NULL,
+            entity_id INT NULL,
+            route VARCHAR(255) NOT NULL,
+            method VARCHAR(8) NOT NULL,
+            ip VARCHAR(64) NULL,
+            user_agent VARCHAR(255) NULL,
+            meta TEXT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            KEY al_user(actor_user_id),
+            KEY al_action(action),
+            KEY al_entity(entity),
+            KEY al_created(created_at)
+        ) ENGINE=InnoDB');
+    } catch (\Throwable $e) {
+        // ignore to not break main flow
+    }
+}
+
+function audit_log(?int $actorUserId, string $action, ?string $entity, $entityId, string $route, string $method, array $meta = []): void
+{
+    ensure_audit_table();
+    $ip = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? ($_SERVER['REMOTE_ADDR'] ?? null);
+    $ua = $_SERVER['HTTP_USER_AGENT'] ?? null;
+    $metaJson = $meta ? json_encode($meta) : null;
+    try {
+        DB::execute(
+            'INSERT INTO audit_logs(actor_user_id,action,entity,entity_id,route,method,ip,user_agent,meta,created_at) VALUES(:u,:a,:e,:eid,:r,:m,:ip,:ua,:meta,NOW())',
+            [
+                ':u' => $actorUserId,
+                ':a' => $action,
+                ':e' => $entity,
+                ':eid' => $entityId,
+                ':r' => $route,
+                ':m' => $method,
+                ':ip' => $ip,
+                ':ua' => $ua,
+                ':meta' => $metaJson,
+            ]
+        );
+    } catch (\Throwable $e) {
+        // swallow
+    }
+}
+
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 // Normaliser le chemin quand l'appli est servie dans un sous-dossier (/hill_new/public/)
 $base = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/'); // ex: /hill_new/public
@@ -181,6 +233,19 @@ if (!str_starts_with($path, '/api/') && $path !== '/login') {
 // Simple router (web + api v1)
 if (str_starts_with($path, '/api/v1')) {
     header('Content-Type: application/json');
+    // Audit: tracer toute requête API (si possible)
+    try {
+        $apiUser = apiUser();
+        $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+        $actionMap = ['GET' => 'view', 'POST' => 'add', 'PATCH' => 'modify', 'PUT' => 'modify', 'DELETE' => 'delete'];
+        $mapped = $actionMap[$method] ?? strtolower($method);
+        $entity = null;
+        if (preg_match('#^/api/v1/([^/]+)#', $path, $mm)) {
+            $entity = $mm[1];
+        }
+        audit_log($apiUser['id'] ?? null, $mapped, $entity, null, $path, $method);
+    } catch (\Throwable $e) { /* ignore */
+    }
     if ($path === '/api/v1/health') {
         echo json_encode(['status' => 'ok']);
         exit;
@@ -247,6 +312,8 @@ if (str_starts_with($path, '/api/v1')) {
             exit;
         }
         $token = $uModel->createToken((int)$user['id']);
+        // Audit: connexion
+        audit_log((int)$user['id'], 'login', 'auth', (int)$user['id'], $path, 'POST', ['email' => $email]);
         echo json_encode(['token' => $token, 'user' => ['id' => $user['id'], 'name' => $user['name'], 'role' => $user['role']]]);
         exit;
     }
@@ -289,23 +356,15 @@ if (str_starts_with($path, '/api/v1')) {
         }
         // Validation unicité code
         $code = $data['code'] ?? '';
-        if ($code === '') $code = uniqid('D');
-        $exists = DB::query('SELECT id FROM depots WHERE code = :c LIMIT 1', [':c' => $code]);
-        if ($exists) {
-            http_response_code(409);
-            echo json_encode(['error' => 'Code déjà utilisé']);
-            exit;
-        }
-        $managerUserId = isset($data['manager_user_id']) ? (int)$data['manager_user_id'] : null;
-        $managerName = $data['manager_name'] ?? null;
-        if ($managerUserId) {
-            $uRow = DB::query('SELECT id,name FROM users WHERE id=:id', [':id' => $managerUserId])[0] ?? null;
-            if ($uRow) {
-                if (!$managerName) $managerName = $uRow['name'];
-            } else {
-                $managerUserId = null;
+        if ($code !== '') {
+            $exists = DB::query('SELECT id FROM depots WHERE code = :c LIMIT 1', [':c' => $code]);
+            if ($exists) {
+                http_response_code(409);
+                echo json_encode(['error' => 'Code déjà utilisé']);
+                exit;
             }
         }
+        $managerUserId = isset($data['manager_user_id']) ? (int)$data['manager_user_id'] : null;
         $isMain = !empty($data['is_main']) ? 1 : 0;
         if ($isMain) {
             DB::execute('UPDATE depots SET is_main = 0 WHERE is_main = 1');
@@ -1417,6 +1476,117 @@ if (str_starts_with($path, '/api/v1')) {
         ]);
         exit;
     }
+    // Audit logs listing (admin)
+    if ($path === '/api/v1/audit-logs' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $u = requireAuth();
+        requireRole($u, ['admin']);
+        ensure_audit_table();
+        $where = [];
+        $params = [];
+        $action = trim($_GET['action'] ?? '');
+        $entity = trim($_GET['entity'] ?? '');
+        $userId = isset($_GET['user_id']) && $_GET['user_id'] !== '' ? (int)$_GET['user_id'] : null;
+        $from = trim($_GET['from'] ?? '');
+        $to = trim($_GET['to'] ?? '');
+        $q = trim($_GET['q'] ?? '');
+        $limit = (int)($_GET['limit'] ?? 200);
+        if ($limit <= 0 || $limit > 1000) $limit = 200;
+        if ($action !== '') {
+            $where[] = 'al.action = :ac';
+            $params[':ac'] = $action;
+        }
+        if ($entity !== '') {
+            $where[] = 'al.entity = :en';
+            $params[':en'] = $entity;
+        }
+        if ($userId !== null) {
+            $where[] = 'al.actor_user_id = :uid';
+            $params[':uid'] = $userId;
+        }
+        if ($from !== '') {
+            $where[] = 'al.created_at >= :from';
+            $params[':from'] = $from . ' 00:00:00';
+        }
+        if ($to !== '') {
+            $where[] = 'al.created_at <= :to';
+            $params[':to'] = $to . ' 23:59:59';
+        }
+        if ($q !== '') {
+            $where[] = '(al.route LIKE :q OR al.entity LIKE :q OR al.action LIKE :q OR u.name LIKE :q)';
+            $params[':q'] = '%' . $q . '%';
+        }
+        $sql = 'SELECT al.id, al.actor_user_id, u.name AS actor_name, al.action, al.entity, al.entity_id, al.route, al.method, al.ip, al.user_agent, al.created_at '
+            . 'FROM audit_logs al LEFT JOIN users u ON u.id = al.actor_user_id';
+        if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
+        $sql .= ' ORDER BY al.id DESC LIMIT ' . $limit;
+        $rows = DB::query($sql, $params);
+        echo json_encode($rows);
+        exit;
+    }
+    if ($path === '/api/v1/audit-logs/export' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // CSV export
+        $u = requireAuth();
+        requireRole($u, ['admin']);
+        ensure_audit_table();
+        $where = [];
+        $params = [];
+        $action = trim($_GET['action'] ?? '');
+        $entity = trim($_GET['entity'] ?? '');
+        $userId = isset($_GET['user_id']) && $_GET['user_id'] !== '' ? (int)$_GET['user_id'] : null;
+        $from = trim($_GET['from'] ?? '');
+        $to = trim($_GET['to'] ?? '');
+        $q = trim($_GET['q'] ?? '');
+        if ($action !== '') {
+            $where[] = 'al.action = :ac';
+            $params[':ac'] = $action;
+        }
+        if ($entity !== '') {
+            $where[] = 'al.entity = :en';
+            $params[':en'] = $entity;
+        }
+        if ($userId !== null) {
+            $where[] = 'al.actor_user_id = :uid';
+            $params[':uid'] = $userId;
+        }
+        if ($from !== '') {
+            $where[] = 'al.created_at >= :from';
+            $params[':from'] = $from . ' 00:00:00';
+        }
+        if ($to !== '') {
+            $where[] = 'al.created_at <= :to';
+            $params[':to'] = $to . ' 23:59:59';
+        }
+        if ($q !== '') {
+            $where[] = '(al.route LIKE :q OR al.entity LIKE :q OR al.action LIKE :q OR u.name LIKE :q)';
+            $params[':q'] = '%' . $q . '%';
+        }
+        $sql = 'SELECT al.id, al.actor_user_id, u.name AS actor_name, al.action, al.entity, al.entity_id, al.route, al.method, al.ip, al.user_agent, al.created_at '
+            . 'FROM audit_logs al LEFT JOIN users u ON u.id = al.actor_user_id';
+        if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
+        $sql .= ' ORDER BY al.id DESC LIMIT 5000';
+        $rows = DB::query($sql, $params);
+        header('Content-Type: text/csv; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="audit_logs.csv"');
+        $out = fopen('php://output', 'w');
+        fputcsv($out, ['id', 'user_id', 'user_name', 'action', 'entity', 'entity_id', 'route', 'method', 'ip', 'user_agent', 'created_at']);
+        foreach ($rows as $r) {
+            fputcsv($out, [
+                $r['id'],
+                $r['actor_user_id'],
+                $r['actor_name'] ?? '',
+                $r['action'],
+                $r['entity'],
+                $r['entity_id'],
+                $r['route'],
+                $r['method'],
+                $r['ip'],
+                $r['user_agent'],
+                $r['created_at']
+            ]);
+        }
+        fclose($out);
+        exit;
+    }
     http_response_code(404);
     echo json_encode(['error' => 'Not found']);
     exit;
@@ -1428,6 +1598,11 @@ if ($path === '/' || $path === '/dashboard') {
     if (empty($_SESSION['user_id'])) {
         header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
         exit;
+    }
+    // Audit: vue dashboard
+    try {
+        audit_log((int)$_SESSION['user_id'], 'view', 'dashboard', null, $path, 'GET');
+    } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/dashboard.php';
@@ -1476,6 +1651,10 @@ if ($path === '/depots/map') {
         header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
         exit;
     }
+    try {
+        audit_log((int)$_SESSION['user_id'], 'view', 'depots_map', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/depots_map.php';
     include __DIR__ . '/../views/layout/footer.php';
@@ -1484,42 +1663,70 @@ if ($path === '/depots/map') {
 
 // Admin pages (simple CRUD)
 if ($path === '/products') {
+    try {
+        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'products', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/products.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }
 if ($path === '/products/new') {
+    try {
+        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'products_new', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/products_new.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }
 if ($path === '/products/edit') {
+    try {
+        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'products_edit', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/products_edit.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }
 if ($path === '/products/view') {
+    try {
+        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'product_view', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/product_view.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }
 if ($path === '/clients') {
+    try {
+        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'clients', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/clients.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }
 if ($path === '/clients/new') {
+    try {
+        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'clients_new', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/clients_form.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }
 if ($path === '/clients/edit') {
+    try {
+        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'clients_edit', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/clients_form.php';
     include __DIR__ . '/../views/layout/footer.php';
@@ -1536,6 +1743,10 @@ if ($path === '/users') {
             exit;
         }
     }
+    try {
+        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'users', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/users.php';
     include __DIR__ . '/../views/layout/footer.php';
@@ -1550,6 +1761,10 @@ if ($path === '/users/new') {
             echo 'Accès refusé';
             exit;
         }
+    }
+    try {
+        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'users_new', null, $path, 'GET');
+    } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/users_form.php';
@@ -1566,30 +1781,50 @@ if ($path === '/users/edit') {
             exit;
         }
     }
+    try {
+        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'users_edit', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/users_form.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }
 if ($path === '/depots') {
+    try {
+        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'depots', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/depots.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }
 if ($path === '/depots/new') {
+    try {
+        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'depots_new', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/depots_new.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }
 if ($path === '/depots/edit') {
+    try {
+        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'depots_edit', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/depots_edit.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }
 if ($path === '/orders') {
+    try {
+        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'orders', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/orders.php';
     include __DIR__ . '/../views/layout/footer.php';
@@ -1597,6 +1832,10 @@ if ($path === '/orders') {
 }
 // Orders new form
 if ($path === '/orders/new') {
+    try {
+        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'orders_new', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/orders_form.php';
     include __DIR__ . '/../views/layout/footer.php';
@@ -1629,6 +1868,12 @@ if ($path === '/orders/export') {
         http_response_code(500);
         echo 'TCPDF non installé. Installez avec: composer require tecnickcom/tcpdf';
         exit;
+    }
+    // Audit export
+    try {
+        $actor = !empty($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : (apiUser()['id'] ?? null);
+        audit_log($actor, 'export', 'orders', (int)$ord['id'], $path, 'GET', ['reference' => $ord['reference'] ?? null]);
+    } catch (\Throwable $e) {
     }
     $pdf = new \TCPDF();
     $pdf->SetCreator('Hill Stock');
@@ -1690,6 +1935,12 @@ if ($path === '/users/export') {
         echo 'TCPDF non installé.';
         exit;
     }
+    // Audit export
+    try {
+        $actor = !empty($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : (apiUser()['id'] ?? null);
+        audit_log($actor, 'export', 'users', (int)$usr['id'], $path, 'GET');
+    } catch (\Throwable $e) {
+    }
     $pdf = new TCPDF('P', 'mm', 'A4');
     $pdf->SetCreator('Hill Stock');
     $pdf->SetAuthor('Hill Stock');
@@ -1729,7 +1980,6 @@ if ($path === '/users/export') {
     $activeLabel = (int)$usr['active'] === 1 ? 'ACTIF' : 'INACTIF';
     $html .= '<div class="card-id">'
         . '<div class="cid-topbar">' . $logoTag . '<div style="font-size:10px;color:#666">ID: ' . htmlspecialchars((string)$usr['id']) . '</div></div>'
-        . '<div class="cid-header">' . $photoTag . '<div><div class="cid-title">IDENTIFICATION UTILISATEUR</div><div class="cid-row"><span class="' . $badgeClass . '">' . $activeLabel . '</span></div></div></div>'
         . '<div class="cid-header">' . $photoTag . '<div><div class="cid-title">IDENTIFICATION UTILISATEUR</div><div class="cid-row"><span class="' . $badgeClass . '">' . $activeLabel . '</span></div></div></div>'
         . '<div class="cid-row"><span class="cid-label">Nom:</span> ' . htmlspecialchars($usr['name'] ?? '') . '</div>'
         . '<div class="cid-row"><span class="cid-label">Email/Login:</span> ' . htmlspecialchars($usr['email'] ?? '') . '</div>'
@@ -1794,6 +2044,30 @@ if ($path === '/transfers') {
 if ($path === '/stocks') {
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/stocks.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+
+// Logs page (admin)
+if ($path === '/logs') {
+    if (empty($_SESSION['user_id'])) {
+        header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
+        exit;
+    }
+    // simple guard in page: only admin can view
+    $uid = (int)$_SESSION['user_id'];
+    $urow = DB::query('SELECT role FROM users WHERE id=:id', [':id' => $uid])[0] ?? null;
+    if (!$urow || ($urow['role'] ?? '') !== 'admin') {
+        http_response_code(403);
+        echo 'Accès refusé';
+        exit;
+    }
+    try {
+        audit_log($uid, 'view', 'audit_logs', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/logs.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }
