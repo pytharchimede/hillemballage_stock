@@ -179,7 +179,7 @@
     const toggle = (id, show) => {
       const el = document.getElementById(id);
       if (!el) return;
-      el.style.display = show ? "" : "none";
+      el.style.display = show ? "block" : "none";
     };
     // Finance-driven blocks
     toggle("kpi-receivables", !!v.finance);
@@ -198,6 +198,8 @@
     toggle("card-users", !!v.users);
     // Top products: visible si finance ou orders (recettes/commandes)
     toggle("card-top-products", !!(v.finance || v.orders));
+    // Quick actions: visibles pour livreur, ou si ventes/clients visibles
+    toggle("quick-actions", v.role === "livreur" || !!(v.sales || v.clients));
   }
 
   function renderRevenue30(points) {

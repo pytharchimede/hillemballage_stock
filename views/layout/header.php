@@ -34,6 +34,7 @@
             <a data-entity="orders" data-action="view" href="<?= $routeBase ?>/orders">Commandes</a>
             <a data-entity="transfers" data-action="view" href="<?= $routeBase ?>/transferts">Transferts</a>
             <a data-entity="sales" data-action="view" href="<?= $routeBase ?>/sales-quick">Vente rapide</a>
+            <a data-entity="sales" data-action="view" href="<?= $routeBase ?>/sales">Ventes</a>
             <a data-entity="finance_stock" data-action="view" href="<?= $routeBase ?>/finance-stock">Point financier & stock</a>
             <a data-entity="seller_rounds" data-action="view" href="<?= $routeBase ?>/seller-rounds">Remises</a>
             <a data-entity="collections" data-action="view" href="<?= $routeBase ?>/collections">Recouvrement</a>

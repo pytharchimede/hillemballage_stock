@@ -47,7 +47,7 @@
             var ok = false;
             if (perms["*"] && perms["*"][act]) ok = true;
             else if (perms[ent] && perms[ent][act]) ok = true;
-            if (ok) a.style.display = "";
+            if (ok) a.style.display = "inline-block";
             else a.style.display = "none";
           });
       })

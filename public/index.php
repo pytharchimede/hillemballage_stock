@@ -783,18 +783,39 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode(['client_id' => $cid, 'total' => (int)$row['total'], 'paid' => (int)$row['paid'], 'balance' => $balance]);
         exit;
     }
-    // Sales listing by livreur or client
+    // Sales listing (scoped by role)
     if ($path === '/api/v1/sales' && $_SERVER['REQUEST_METHOD'] === 'GET') {
-        requireAuth();
+        $auth = requireAuth();
+        $role = (string)($auth['role'] ?? '');
+        $uid = (int)($auth['id'] ?? 0);
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
         $w = [];
         $p = [];
         if (!empty($_GET['client_id'])) {
             $w[] = 'client_id = :client';
             $p[':client'] = (int)$_GET['client_id'];
         }
-        if (!empty($_GET['user_id'])) {
-            $w[] = 'user_id = :user';
-            $p[':user'] = (int)$_GET['user_id'];
+        // Scope by role
+        if ($role === 'admin') {
+            if (!empty($_GET['user_id'])) {
+                $w[] = 'user_id = :user';
+                $p[':user'] = (int)$_GET['user_id'];
+            }
+            if (!empty($_GET['depot_id'])) {
+                $w[] = 'depot_id = :dep';
+                $p[':dep'] = (int)$_GET['depot_id'];
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $w[] = 'depot_id = :dep';
+            $p[':dep'] = $userDepotId;
+            if (!empty($_GET['user_id'])) {
+                $w[] = 'user_id = :user';
+                $p[':user'] = (int)$_GET['user_id'];
+            }
+        } else {
+            // livreur ou autre: uniquement ses ventes
+            $w[] = 'user_id = :me';
+            $p[':me'] = $uid;
         }
         if (!empty($_GET['from'])) {
             $w[] = 'sold_at >= :from';
@@ -1343,6 +1364,13 @@ if (str_starts_with($path, '/api/v1')) {
             'users' => (function () use ($auth) {
                 try {
                     return can($auth, 'users', 'view');
+                } catch (\Throwable $e) {
+                    return false;
+                }
+            })(),
+            'sales' => (function () use ($auth) {
+                try {
+                    return can($auth, 'sales', 'view');
                 } catch (\Throwable $e) {
                     return false;
                 }
@@ -3653,6 +3681,29 @@ if ($path === '/sales-quick') {
     }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/sales_quick.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+
+// Sales list page
+if ($path === '/sales') {
+    if (empty($_SESSION['user_id'])) {
+        header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
+        exit;
+    }
+    $uid = (int)$_SESSION['user_id'];
+    $u = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+    if (!$u || !userCan($u, 'sales', 'view')) {
+        http_response_code(403);
+        echo 'Accès refusé';
+        exit;
+    }
+    try {
+        audit_log((int)$_SESSION['user_id'], 'view', 'sales', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/sales.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }

@@ -10,7 +10,8 @@
     #card-clients,
     #card-orders,
     #card-users,
-    #card-top-products {
+    #card-top-products,
+    #quick-actions {
         display: none;
     }
 </style>
@@ -111,6 +112,35 @@
         <canvas id="chartRevenue30" height="110"></canvas>
         <div class="muted" style="font-size:11px">Revenus 30 jours</div>
     </div>
+</section>
+
+<section class="cards grid-3" id="quick-actions">
+    <?php
+    $scriptDir = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'])), '/');
+    $routeBase = $scriptDir;
+    ?>
+    <a class="card link-card" href="<?= $routeBase ?>/sales-quick">
+        <h3><span class="icon"><i class="fa-solid fa-bolt"></i></span> Vente rapide</h3>
+        <div class="muted">Saisie express des ventes</div>
+    </a>
+    <a class="card link-card" href="<?= $routeBase ?>/sales">
+        <h3><span class="icon"><i class="fa-solid fa-receipt"></i></span> Ventes</h3>
+        <div class="muted">Historique et filtres</div>
+    </a>
+    <a class="card link-card" href="<?= $routeBase ?>/clients">
+        <h3><span class="icon"><i class="fa-solid fa-location-dot"></i></span> Clients</h3>
+        <div class="muted">Liste et géolocalisations</div>
+    </a>
+    <style>
+        .link-card {
+            text-decoration: none;
+            color: inherit;
+        }
+
+        .link-card:hover {
+            outline: 2px solid rgba(13, 110, 253, .25);
+        }
+    </style>
 </section>
 
 <section class="cards grid-2">
