@@ -212,6 +212,54 @@ function audit_log(?int $actorUserId, string $action, ?string $entity, $entityId
     }
 }
 
+// --- Seller rounds & payments helpers ---
+function ensure_seller_rounds_tables(): void
+{
+    try {
+        DB::execute('CREATE TABLE IF NOT EXISTS seller_rounds (
+            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            depot_id INT UNSIGNED NOT NULL,
+            user_id INT UNSIGNED NOT NULL,
+            status ENUM("open","closed") NOT NULL DEFAULT "open",
+            cash_turned_in INT NOT NULL DEFAULT 0,
+            notes TEXT NULL,
+            assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            closed_at DATETIME NULL,
+            KEY sr_depot(depot_id),
+            KEY sr_user(user_id),
+            KEY sr_status(status)
+        ) ENGINE=InnoDB');
+        DB::execute('CREATE TABLE IF NOT EXISTS seller_round_items (
+            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            round_id INT UNSIGNED NOT NULL,
+            product_id INT UNSIGNED NOT NULL,
+            qty_assigned INT NOT NULL DEFAULT 0,
+            qty_returned INT NOT NULL DEFAULT 0,
+            KEY sri_round(round_id),
+            KEY sri_product(product_id)
+        ) ENGINE=InnoDB');
+    } catch (\Throwable $e) { /* ignore */
+    }
+}
+
+function ensure_sale_payments_table(): void
+{
+    try {
+        DB::execute('CREATE TABLE IF NOT EXISTS sale_payments (
+            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            sale_id INT UNSIGNED NOT NULL,
+            amount INT NOT NULL,
+            method VARCHAR(32) NULL,
+            user_id INT UNSIGNED NULL,
+            paid_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            KEY sp_sale(sale_id),
+            KEY sp_user(user_id),
+            KEY sp_paid_at(paid_at)
+        ) ENGINE=InnoDB');
+    } catch (\Throwable $e) { /* ignore */
+    }
+}
+
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 // Normaliser le chemin quand l'appli est servie dans un sous-dossier (/hill_new/public/)
 $base = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/'); // ex: /hill_new/public
@@ -648,19 +696,30 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode(DB::query($sql, $p));
         exit;
     }
-    // Products listing (optional q search)
+    // Products listing (optional q search, optional depot-specific stock)
     if ($path === '/api/v1/products' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         requireAuth();
         $q = trim($_GET['q'] ?? '');
+        $depId = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
+        $params = [];
+        if ($depId !== null) {
+            $params[':dep'] = $depId;
+        }
+        $stockDepotExpr = ($depId !== null)
+            ? '(SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id = p.id AND s.depot_id = :dep)'
+            : 'NULL';
         if ($q !== '') {
             $like = '%' . $q . '%';
-            $rows = DB::query('SELECT p.id,p.name,p.sku,p.unit_price,p.description,p.image_path,p.active, (
-                SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id = p.id
-            ) AS stock_total FROM products p WHERE p.name LIKE :q OR p.sku LIKE :q ORDER BY p.id DESC', [':q' => $like]);
+            $params[':q'] = $like;
+            $rows = DB::query('SELECT p.id,p.name,p.sku,p.unit_price,p.description,p.image_path,p.active,
+                (SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id = p.id) AS stock_total,
+                ' . $stockDepotExpr . ' AS stock_depot
+                FROM products p WHERE p.name LIKE :q OR p.sku LIKE :q ORDER BY p.id DESC', $params);
         } else {
-            $rows = DB::query('SELECT p.id,p.name,p.sku,p.unit_price,p.description,p.image_path,p.active, (
-                SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id = p.id
-            ) AS stock_total FROM products p ORDER BY p.id DESC');
+            $rows = DB::query('SELECT p.id,p.name,p.sku,p.unit_price,p.description,p.image_path,p.active,
+                (SELECT COALESCE(SUM(s.quantity),0) FROM stocks s WHERE s.product_id = p.id) AS stock_total,
+                ' . $stockDepotExpr . ' AS stock_depot
+                FROM products p ORDER BY p.id DESC', $params);
         }
         echo json_encode($rows);
         exit;
@@ -885,6 +944,31 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode($rows);
         exit;
     }
+    // Lightweight users list for selection (admin/gerant)
+    if ($path === '/api/v1/users/brief' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $u = requireAuth();
+        requireRole($u, ['admin', 'gerant']);
+        $role = trim($_GET['role'] ?? '');
+        $depotId = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
+        $where = ['active = 1'];
+        $params = [];
+        if ($role !== '') {
+            $where[] = 'role = :r';
+            $params[':r'] = $role;
+        }
+        if ($depotId !== null) {
+            $where[] = 'depot_id = :d';
+            $params[':d'] = $depotId;
+        }
+        $sql = 'SELECT id,name,role,depot_id FROM users';
+        if ($where) {
+            $sql .= ' WHERE ' . implode(' AND ', $where);
+        }
+        $sql .= ' ORDER BY name ASC, id ASC';
+        $rows = DB::query($sql, $params);
+        echo json_encode($rows);
+        exit;
+    }
     // Create user (admin/editor)
     if ($path === '/api/v1/users' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $u = requireAuth();
@@ -946,6 +1030,23 @@ if (str_starts_with($path, '/api/v1')) {
         $paramDepot = isset($_GET['depot_id']) ? (int)$_GET['depot_id'] : null;
         $threshold = (int)($_GET['threshold'] ?? 5);
         if (!in_array($threshold, [3, 5, 10], true)) $threshold = 5;
+        // Ensure optional tables for rounds and payments
+        try {
+            ensure_seller_rounds_tables();
+        } catch (\Throwable $e) {
+        }
+        try {
+            ensure_sale_payments_table();
+        } catch (\Throwable $e) {
+        }
+        // Ensure cost_price column exists on products
+        try {
+            $col = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="products" AND COLUMN_NAME="cost_price"');
+            if (!$col) {
+                DB::execute('ALTER TABLE products ADD COLUMN cost_price INT NOT NULL DEFAULT 0 AFTER unit_price');
+            }
+        } catch (\Throwable $e) {
+        }
 
         // Scope helpers (sales)
         $salesWhere = [];
@@ -979,6 +1080,7 @@ if (str_starts_with($path, '/api/v1')) {
 
         // Stock KPIs
         $stockTotal = (int)(DB::query('SELECT COALESCE(SUM(quantity),0) qty FROM stocks s' . ($stockScopeSql ? $stockScopeSql : ''))[0]['qty'] ?? 0);
+        $stockValuation = (int)(DB::query('SELECT COALESCE(SUM(s.quantity * p.cost_price),0) v FROM stocks s JOIN products p ON p.id=s.product_id' . ($stockScopeSql ? $stockScopeSql : ''), $stockParams)[0]['v'] ?? 0);
         $stockLines = DB::query('SELECT COALESCE(SUM(s.quantity),0) quantity, p.name FROM products p LEFT JOIN stocks s ON s.product_id=p.id' . ($stockScopeSql ? $stockScopeSql : '') . ' GROUP BY p.id,p.name ORDER BY quantity DESC LIMIT 10', $stockParams);
 
         // Top soldes clients (créances) dans le scope
@@ -1037,6 +1139,58 @@ if (str_starts_with($path, '/api/v1')) {
         // Latest sales (10)
         $latest = DB::query('SELECT s.id, c.name AS client_name, s.total_amount, s.sold_at, s.depot_id FROM sales s LEFT JOIN clients c ON c.id=s.client_id' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' s.sold_at IS NOT NULL ORDER BY s.sold_at DESC LIMIT 10', $salesParams);
 
+        // Operational KPIs: rounds open, cash turned in today, collections today
+        // Rounds open (scoped)
+        $roundsWhere = ['sr.status = "open"'];
+        $roundsParams = [];
+        if ($role === 'admin') {
+            if ($paramDepot && $paramDepot > 0) {
+                $roundsWhere[] = 'sr.depot_id = :dep';
+                $roundsParams[':dep'] = $paramDepot;
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $roundsWhere[] = 'sr.depot_id = :dep';
+            $roundsParams[':dep'] = $userDepotId;
+        } else {
+            $roundsWhere[] = 'sr.user_id = :uid';
+            $roundsParams[':uid'] = $uid;
+        }
+        $roundsSql = 'SELECT COUNT(*) c FROM seller_rounds sr WHERE ' . implode(' AND ', $roundsWhere);
+        $roundsOpen = (int)(DB::query($roundsSql, $roundsParams)[0]['c'] ?? 0);
+
+        // Cash turned in today (closed today)
+        $cashWhere = ['sr.status = "closed"', 'DATE(sr.closed_at) = CURDATE()'];
+        $cashParams = [];
+        if ($role === 'admin') {
+            if ($paramDepot && $paramDepot > 0) {
+                $cashWhere[] = 'sr.depot_id = :dep';
+                $cashParams[':dep'] = $paramDepot;
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $cashWhere[] = 'sr.depot_id = :dep';
+            $cashParams[':dep'] = $userDepotId;
+        } else {
+            $cashWhere[] = 'sr.user_id = :uid';
+            $cashParams[':uid'] = $uid;
+        }
+        $cashSql = 'SELECT COALESCE(SUM(sr.cash_turned_in),0) v FROM seller_rounds sr WHERE ' . implode(' AND ', $cashWhere);
+        $cashToday = (int)(DB::query($cashSql, $cashParams)[0]['v'] ?? 0);
+
+        // Collections (recouvrement) today based on sale_payments joined to sales with same scope
+        $payWhere = ['DATE(sp.paid_at) = CURDATE()'];
+        $payParams = $salesParams; // reuse params names :dep / :uid
+        if ($role === 'admin') {
+            if ($paramDepot && $paramDepot > 0) {
+                $payWhere[] = 's.depot_id = :dep';
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $payWhere[] = 's.depot_id = :dep';
+        } else {
+            $payWhere[] = 's.user_id = :uid';
+        }
+        $collSql = 'SELECT COALESCE(SUM(sp.amount),0) v FROM sale_payments sp JOIN sales s ON s.id = sp.sale_id WHERE ' . implode(' AND ', $payWhere);
+        $collectionsToday = (int)(DB::query($collSql, $payParams)[0]['v'] ?? 0);
+
         // Visibility (coarse-grained)
         $visibility = [
             'finance' => ($role === 'admin' || $role === 'gerant'),
@@ -1076,9 +1230,12 @@ if (str_starts_with($path, '/api/v1')) {
         if (!$visibility['finance']) {
             $receivablesTotal = null;
             $series30 = [];
+            $cashToday = null;
+            $collectionsToday = null;
         }
         if (!$visibility['stocks']) {
             $stockTotal = null;
+            $stockValuation = null;
             $lowStock = [];
             $stockLines = [];
         }
@@ -1092,6 +1249,7 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode([
             'stock_total' => $stockTotal !== null ? (int)$stockTotal : null,
             'stock_items' => $stockLines,
+            'stock_valuation' => isset($stockValuation) && $stockValuation !== null ? (int)$stockValuation : null,
             'top_balances' => $topBalances,
             'daily' => $daily,
             'quick_stats' => [
@@ -1099,6 +1257,10 @@ if (str_starts_with($path, '/api/v1')) {
                 'sales_today' => $salesToday,
                 'active_clients' => $activeClients30,
                 'receivables_total' => $receivablesTotal,
+                'rounds_open' => $roundsOpen,
+                'cash_turned_in_today' => $cashToday,
+                'collections_today' => $collectionsToday,
+                'stock_valuation' => isset($stockValuation) && $stockValuation !== null ? (int)$stockValuation : null,
                 'window' => $days . 'd'
             ],
             'sparkline' => $spark,
@@ -1867,6 +2029,165 @@ if (str_starts_with($path, '/api/v1')) {
         $pdf->Output('audit_logs.pdf', 'I');
         exit;
     }
+    // Create seller round (assignment) - admin/gerant
+    if ($path === '/api/v1/seller-rounds' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $u = requireAuth();
+        requireRole($u, ['admin', 'gerant']);
+        ensure_seller_rounds_tables();
+        $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
+        $depotId = (int)($data['depot_id'] ?? 0);
+        $sellerId = (int)($data['user_id'] ?? 0);
+        $items = $data['items'] ?? [];
+        if ($depotId <= 0 || $sellerId <= 0 || !is_array($items) || count($items) === 0) {
+            http_response_code(422);
+            echo json_encode(['error' => 'depot_id, user_id et items requis']);
+            exit;
+        }
+        // Create round
+        DB::execute('INSERT INTO seller_rounds(depot_id,user_id,status,assigned_at) VALUES(:d,:u,"open",NOW())', [':d' => $depotId, ':u' => $sellerId]);
+        $rid = (int)DB::query('SELECT LAST_INSERT_ID() id')[0]['id'];
+        // Insert items + stock movements (dispatch)
+        $sm = new StockMovement();
+        foreach ($items as $it) {
+            $pid = (int)($it['product_id'] ?? 0);
+            $qty = max(0, (int)($it['quantity'] ?? 0));
+            if ($pid <= 0 || $qty <= 0) continue;
+            DB::execute('INSERT INTO seller_round_items(round_id,product_id,qty_assigned,qty_returned) VALUES(:r,:p,:qa,0)', [':r' => $rid, ':p' => $pid, ':qa' => $qty]);
+            // Stock OUT from depot (dispatch to seller)
+            $sm->move($depotId, $pid, 'out', $qty, date('Y-m-d H:i:s'), null, 'dispatch:user:' . $sellerId);
+            Stock::adjust($depotId, $pid, 'out', $qty);
+        }
+        try {
+            audit_log((int)$u['id'], 'add', 'seller_rounds', $rid, $path, 'POST', ['depot_id' => $depotId, 'user_id' => $sellerId]);
+        } catch (\Throwable $e) {
+        }
+        echo json_encode(['created' => true, 'round_id' => $rid]);
+        exit;
+    }
+    // Close seller round (returns + cash turned in)
+    if (preg_match('#^/api/v1/seller-rounds/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
+        $auth = requireAuth();
+        ensure_seller_rounds_tables();
+        $rid = (int)$m[1];
+        $round = DB::query('SELECT id,depot_id,user_id,status FROM seller_rounds WHERE id=:id LIMIT 1', [':id' => $rid])[0] ?? null;
+        if (!$round) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Not found']);
+            exit;
+        }
+        // Authorization: admin/gerant or the seller himself
+        if (!in_array(($auth['role'] ?? ''), ['admin', 'gerant'], true) && (int)$auth['id'] !== (int)$round['user_id']) {
+            http_response_code(403);
+            echo json_encode(['error' => 'Forbidden']);
+            exit;
+        }
+        if (($round['status'] ?? '') === 'closed') {
+            http_response_code(409);
+            echo json_encode(['error' => 'Already closed']);
+            exit;
+        }
+        $data = json_decode(file_get_contents('php://input'), true) ?: [];
+        $returns = $data['returns'] ?? [];
+        $cash = (int)($data['cash_turned_in'] ?? 0);
+        $notes = $data['notes'] ?? null;
+        // Apply returns -> stock IN
+        $sm = new StockMovement();
+        foreach ($returns as $it) {
+            $pid = (int)($it['product_id'] ?? 0);
+            $qty = max(0, (int)($it['quantity'] ?? 0));
+            if ($pid <= 0 || $qty <= 0) continue;
+            DB::execute('UPDATE seller_round_items SET qty_returned = LEAST(qty_assigned, qty_returned + :q) WHERE round_id=:r AND product_id=:p', [':q' => $qty, ':r' => $rid, ':p' => $pid]);
+            // Stock IN back to depot
+            $sm->move((int)$round['depot_id'], $pid, 'in', $qty, date('Y-m-d H:i:s'), null, 'return:user:' . (int)$round['user_id']);
+            Stock::adjust((int)$round['depot_id'], $pid, 'in', $qty);
+        }
+        DB::execute('UPDATE seller_rounds SET status="closed", cash_turned_in=:c, notes=:n, closed_at=NOW() WHERE id=:id', [':c' => $cash, ':n' => $notes, ':id' => $rid]);
+        try {
+            audit_log((int)$auth['id'], 'modify', 'seller_rounds', $rid, $path, 'PATCH', ['cash' => $cash]);
+        } catch (\Throwable $e) {
+        }
+        echo json_encode(['closed' => true, 'round_id' => $rid]);
+        exit;
+    }
+    // List seller rounds
+    if ($path === '/api/v1/seller-rounds' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $auth = requireAuth();
+        ensure_seller_rounds_tables();
+        $status = ($_GET['status'] ?? '');
+        $userId = isset($_GET['user_id']) && $_GET['user_id'] !== '' ? (int)$_GET['user_id'] : null;
+        $where = [];
+        $params = [];
+        if (in_array($status, ['open', 'closed'], true)) {
+            $where[] = 'sr.status=:st';
+            $params[':st'] = $status;
+        }
+        if ($userId !== null) {
+            $where[] = 'sr.user_id=:u';
+            $params[':u'] = $userId;
+        }
+        // Access: admin sees all; gerant sees depot rounds; others see their own
+        $role = (string)($auth['role'] ?? '');
+        if (!in_array($role, ['admin'], true)) {
+            if ($role === 'gerant' && !empty($auth['depot_id'])) {
+                $where[] = 'sr.depot_id=:dep';
+                $params[':dep'] = (int)$auth['depot_id'];
+            } else {
+                $where[] = 'sr.user_id=:me';
+                $params[':me'] = (int)$auth['id'];
+            }
+        }
+        $sql = 'SELECT sr.id,sr.depot_id,sr.user_id,sr.status,sr.cash_turned_in,sr.assigned_at,sr.closed_at,u.name AS user_name,d.name AS depot_name '
+            . 'FROM seller_rounds sr LEFT JOIN users u ON u.id=sr.user_id LEFT JOIN depots d ON d.id=sr.depot_id';
+        if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
+        $sql .= ' ORDER BY sr.assigned_at DESC LIMIT 200';
+        $rows = DB::query($sql, $params);
+        // Optional: aggregate items brief
+        $ids = array_column($rows, 'id');
+        $itemsMap = [];
+        if ($ids) {
+            $in = implode(',', array_map('intval', $ids));
+            $itRows = DB::query('SELECT i.round_id,i.product_id,p.name,i.qty_assigned,i.qty_returned FROM seller_round_items i JOIN products p ON p.id=i.product_id WHERE i.round_id IN (' . $in . ')');
+            foreach ($itRows as $ir) {
+                $itemsMap[(int)$ir['round_id']][] = $ir;
+            }
+        }
+        foreach ($rows as &$r) {
+            $r['items'] = $itemsMap[(int)$r['id']] ?? [];
+        }
+        echo json_encode($rows);
+        exit;
+    }
+    // Add payment to a sale (recouvrement)
+    if (preg_match('#^/api/v1/sales/(\d+)/payments$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $auth = requireAuth();
+        requirePermission($auth, 'sales', 'edit');
+        ensure_sale_payments_table();
+        $sid = (int)$m[1];
+        $sale = DB::query('SELECT id,total_amount,amount_paid FROM sales WHERE id=:id LIMIT 1', [':id' => $sid])[0] ?? null;
+        if (!$sale) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Not found']);
+            exit;
+        }
+        $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
+        $amount = (int)($data['amount'] ?? 0);
+        $method = $data['method'] ?? null;
+        if ($amount <= 0) {
+            http_response_code(422);
+            echo json_encode(['error' => 'Montant invalide']);
+            exit;
+        }
+        DB::execute('INSERT INTO sale_payments(sale_id,amount,method,user_id,paid_at) VALUES(:s,:a,:m,:u,NOW())', [':s' => $sid, ':a' => $amount, ':m' => $method, ':u' => (int)$auth['id']]);
+        // Update sale aggregate
+        DB::execute('UPDATE sales SET amount_paid = amount_paid + :a, updated_at=NOW() WHERE id=:id', [':a' => $amount, ':id' => $sid]);
+        try {
+            audit_log((int)$auth['id'], 'add', 'sale_payments', $sid, $path, 'POST', ['amount' => $amount]);
+        } catch (\Throwable $e) {
+        }
+        $row = DB::query('SELECT id,total_amount,amount_paid FROM sales WHERE id=:id', [':id' => $sid])[0] ?? null;
+        echo json_encode(['ok' => true, 'sale' => $row]);
+        exit;
+    }
     // Dashboard export CSV
     if ($path === '/api/v1/dashboard/export' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $auth = requireAuth();
@@ -1904,8 +2225,36 @@ if (str_starts_with($path, '/api/v1')) {
         }
         $stockScopeSql = $stockWhere ? (' WHERE ' . implode(' AND ', $stockWhere)) : '';
 
+        // Ensure optional tables
+        try {
+            ensure_seller_rounds_tables();
+        } catch (\Throwable $e) {
+        }
+        try {
+            ensure_sale_payments_table();
+        } catch (\Throwable $e) {
+        }
+        // Ensure cost_price column exists on products (for stock valuation)
+        try {
+            $col = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="products" AND COLUMN_NAME="cost_price"');
+            if (!$col) {
+                DB::execute('ALTER TABLE products ADD COLUMN cost_price INT NOT NULL DEFAULT 0 AFTER unit_price');
+            }
+        } catch (\Throwable $e) {
+        }
+        // Ensure cost_price column exists on products (for stock valuation)
+        try {
+            $col = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="products" AND COLUMN_NAME="cost_price"');
+            if (!$col) {
+                DB::execute('ALTER TABLE products ADD COLUMN cost_price INT NOT NULL DEFAULT 0 AFTER unit_price');
+            }
+        } catch (\Throwable $e) {
+        }
+
         // Data
         $stockTotal = (int)(DB::query('SELECT COALESCE(SUM(quantity),0) qty FROM stocks s' . ($stockScopeSql ? $stockScopeSql : ''))[0]['qty'] ?? 0);
+        $stockValuation = (int)(DB::query('SELECT COALESCE(SUM(s.quantity * p.cost_price),0) v FROM stocks s JOIN products p ON p.id=s.product_id' . ($stockScopeSql ? $stockScopeSql : ''), $stockParams)[0]['v'] ?? 0);
+        $stockValuation = (int)(DB::query('SELECT COALESCE(SUM(s.quantity * p.cost_price),0) v FROM stocks s JOIN products p ON p.id=s.product_id' . ($stockScopeSql ? $stockScopeSql : ''), $stockParams)[0]['v'] ?? 0);
         $topBalances = DB::query('SELECT c.id, c.name, (SUM(s.total_amount) - SUM(s.amount_paid)) AS balance FROM sales s JOIN clients c ON c.id = s.client_id' . $salesScopeSql . ' GROUP BY c.id,c.name HAVING balance > 0 ORDER BY balance DESC LIMIT 5', $salesParams);
         $today = date('Y-m-d');
         $dailyDepot = $userDepotId > 0 ? $userDepotId : 1;
@@ -1914,6 +2263,51 @@ if (str_starts_with($path, '/api/v1')) {
         $salesToday = (int)(DB::query('SELECT COUNT(*) c FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' DATE(sold_at)=CURDATE()', $salesParams)[0]['c'] ?? 0);
         $activeClients30 = (int)(DB::query('SELECT COUNT(DISTINCT client_id) c FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)', $salesParams)[0]['c'] ?? 0);
         $receivablesTotal = (int)(DB::query('SELECT COALESCE(SUM(total_amount - amount_paid),0) v FROM sales' . $salesScopeSql, $salesParams)[0]['v'] ?? 0);
+        // Rounds open (scoped)
+        $roundsWhere = ['sr.status = "open"'];
+        $roundsParams = [];
+        if ($role === 'admin') {
+            if ($paramDepot && $paramDepot > 0) {
+                $roundsWhere[] = 'sr.depot_id = :dep';
+                $roundsParams[':dep'] = $paramDepot;
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $roundsWhere[] = 'sr.depot_id = :dep';
+            $roundsParams[':dep'] = $userDepotId;
+        } else {
+            $roundsWhere[] = 'sr.user_id = :uid';
+            $roundsParams[':uid'] = $uid;
+        }
+        $roundsOpen = (int)(DB::query('SELECT COUNT(*) c FROM seller_rounds sr WHERE ' . implode(' AND ', $roundsWhere), $roundsParams)[0]['c'] ?? 0);
+        // Cash today (closed today)
+        $cashWhere = ['sr.status = "closed"', 'DATE(sr.closed_at) = CURDATE()'];
+        $cashParams = [];
+        if ($role === 'admin') {
+            if ($paramDepot && $paramDepot > 0) {
+                $cashWhere[] = 'sr.depot_id = :dep';
+                $cashParams[':dep'] = $paramDepot;
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $cashWhere[] = 'sr.depot_id = :dep';
+            $cashParams[':dep'] = $userDepotId;
+        } else {
+            $cashWhere[] = 'sr.user_id = :uid';
+            $cashParams[':uid'] = $uid;
+        }
+        $cashToday = (int)(DB::query('SELECT COALESCE(SUM(sr.cash_turned_in),0) v FROM seller_rounds sr WHERE ' . implode(' AND ', $cashWhere), $cashParams)[0]['v'] ?? 0);
+        // Collections today
+        $payWhere = ['DATE(sp.paid_at) = CURDATE()'];
+        $payParams = $salesParams;
+        if ($role === 'admin') {
+            if ($paramDepot && $paramDepot > 0) {
+                $payWhere[] = 's.depot_id = :dep';
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $payWhere[] = 's.depot_id = :dep';
+        } else {
+            $payWhere[] = 's.user_id = :uid';
+        }
+        $collectionsToday = (int)(DB::query('SELECT COALESCE(SUM(sp.amount),0) v FROM sale_payments sp JOIN sales s ON s.id=sp.sale_id WHERE ' . implode(' AND ', $payWhere), $payParams)[0]['v'] ?? 0);
         $rowsSeries = DB::query('SELECT DATE(sold_at) d, SUM(total_amount) v FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' sold_at >= DATE_SUB(CURDATE(), INTERVAL ' . ($days - 1) . ' DAY) GROUP BY DATE(sold_at) ORDER BY d ASC', $salesParams);
         $topProducts = DB::query('SELECT p.name, SUM(si.subtotal) total FROM sale_items si JOIN sales s ON s.id=si.sale_id JOIN products p ON p.id=si.product_id' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' s.sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY p.id,p.name ORDER BY total DESC LIMIT 10', $salesParams);
         $lowStock = DB::query('SELECT p.id, p.name, COALESCE(SUM(s.quantity),0) qty FROM products p LEFT JOIN stocks s ON s.product_id=p.id' . ($stockScopeSql ? $stockScopeSql : '') . ' GROUP BY p.id,p.name HAVING qty <= :th ORDER BY qty ASC, p.name ASC LIMIT 10', $stockParams + [':th' => $threshold]);
@@ -1937,6 +2331,10 @@ if (str_starts_with($path, '/api/v1')) {
         fputcsv($out, ['Clients actifs (30j)', $activeClients30]);
         fputcsv($out, ['Encours (créances)', $receivablesTotal]);
         fputcsv($out, ['Stock total', $stockTotal]);
+        fputcsv($out, ['Valorisation stock', $stockValuation]);
+        fputcsv($out, ['Tournées ouvertes', $roundsOpen]);
+        fputcsv($out, ['Cash remis (auj.)', $cashToday]);
+        fputcsv($out, ['Recouvrement (auj.)', $collectionsToday]);
         fputcsv($out, []);
 
         // Revenue series
@@ -2037,6 +2435,16 @@ if (str_starts_with($path, '/api/v1')) {
         }
         $stockScopeSql = $stockWhere ? (' WHERE ' . implode(' AND ', $stockWhere)) : '';
 
+        // Ensure optional tables
+        try {
+            ensure_seller_rounds_tables();
+        } catch (\Throwable $e) {
+        }
+        try {
+            ensure_sale_payments_table();
+        } catch (\Throwable $e) {
+        }
+
         // Data
         $stockTotal = (int)(DB::query('SELECT COALESCE(SUM(quantity),0) qty FROM stocks s' . ($stockScopeSql ? $stockScopeSql : ''))[0]['qty'] ?? 0);
         $topBalances = DB::query('SELECT c.id, c.name, (SUM(s.total_amount) - SUM(s.amount_paid)) AS balance FROM sales s JOIN clients c ON c.id = s.client_id' . $salesScopeSql . ' GROUP BY c.id,c.name HAVING balance > 0 ORDER BY balance DESC LIMIT 5', $salesParams);
@@ -2047,6 +2455,51 @@ if (str_starts_with($path, '/api/v1')) {
         $salesToday = (int)(DB::query('SELECT COUNT(*) c FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' DATE(sold_at)=CURDATE()', $salesParams)[0]['c'] ?? 0);
         $activeClients30 = (int)(DB::query('SELECT COUNT(DISTINCT client_id) c FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)', $salesParams)[0]['c'] ?? 0);
         $receivablesTotal = (int)(DB::query('SELECT COALESCE(SUM(total_amount - amount_paid),0) v FROM sales' . $salesScopeSql, $salesParams)[0]['v'] ?? 0);
+        // Rounds open (scoped)
+        $roundsWhere = ['sr.status = "open"'];
+        $roundsParams = [];
+        if ($role === 'admin') {
+            if ($paramDepot && $paramDepot > 0) {
+                $roundsWhere[] = 'sr.depot_id = :dep';
+                $roundsParams[':dep'] = $paramDepot;
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $roundsWhere[] = 'sr.depot_id = :dep';
+            $roundsParams[':dep'] = $userDepotId;
+        } else {
+            $roundsWhere[] = 'sr.user_id = :uid';
+            $roundsParams[':uid'] = $uid;
+        }
+        $roundsOpen = (int)(DB::query('SELECT COUNT(*) c FROM seller_rounds sr WHERE ' . implode(' AND ', $roundsWhere), $roundsParams)[0]['c'] ?? 0);
+        // Cash today (closed today)
+        $cashWhere = ['sr.status = "closed"', 'DATE(sr.closed_at) = CURDATE()'];
+        $cashParams = [];
+        if ($role === 'admin') {
+            if ($paramDepot && $paramDepot > 0) {
+                $cashWhere[] = 'sr.depot_id = :dep';
+                $cashParams[':dep'] = $paramDepot;
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $cashWhere[] = 'sr.depot_id = :dep';
+            $cashParams[':dep'] = $userDepotId;
+        } else {
+            $cashWhere[] = 'sr.user_id = :uid';
+            $cashParams[':uid'] = $uid;
+        }
+        $cashToday = (int)(DB::query('SELECT COALESCE(SUM(sr.cash_turned_in),0) v FROM seller_rounds sr WHERE ' . implode(' AND ', $cashWhere), $cashParams)[0]['v'] ?? 0);
+        // Collections today
+        $payWhere = ['DATE(sp.paid_at) = CURDATE()'];
+        $payParams = $salesParams;
+        if ($role === 'admin') {
+            if ($paramDepot && $paramDepot > 0) {
+                $payWhere[] = 's.depot_id = :dep';
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $payWhere[] = 's.depot_id = :dep';
+        } else {
+            $payWhere[] = 's.user_id = :uid';
+        }
+        $collectionsToday = (int)(DB::query('SELECT COALESCE(SUM(sp.amount),0) v FROM sale_payments sp JOIN sales s ON s.id=sp.sale_id WHERE ' . implode(' AND ', $payWhere), $payParams)[0]['v'] ?? 0);
         $rowsSeries = DB::query('SELECT DATE(sold_at) d, SUM(total_amount) v FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' sold_at >= DATE_SUB(CURDATE(), INTERVAL ' . ($days - 1) . ' DAY) GROUP BY DATE(sold_at) ORDER BY d ASC', $salesParams);
         $topProducts = DB::query('SELECT p.name, SUM(si.subtotal) total FROM sale_items si JOIN sales s ON s.id=si.sale_id JOIN products p ON p.id=si.product_id' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' s.sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY p.id,p.name ORDER BY total DESC LIMIT 10', $salesParams);
         $lowStock = DB::query('SELECT p.id, p.name, COALESCE(SUM(s.quantity),0) qty FROM products p LEFT JOIN stocks s ON s.product_id=p.id' . ($stockScopeSql ? $stockScopeSql : '') . ' GROUP BY p.id,p.name HAVING qty <= :th ORDER BY qty ASC, p.name ASC LIMIT 10', $stockParams + [':th' => $threshold]);
@@ -2069,6 +2522,10 @@ if (str_starts_with($path, '/api/v1')) {
             . '<tr><td>Clients actifs (30j)</td><td align="right">' . (int)$activeClients30 . '</td></tr>'
             . '<tr><td>Encours (créances)</td><td align="right">' . (int)$receivablesTotal . '</td></tr>'
             . '<tr><td>Stock total</td><td align="right">' . (int)$stockTotal . '</td></tr>'
+            . '<tr><td>Valorisation stock</td><td align="right">' . (int)$stockValuation . '</td></tr>'
+            . '<tr><td>Tournées ouvertes</td><td align="right">' . (int)$roundsOpen . '</td></tr>'
+            . '<tr><td>Cash remis (auj.)</td><td align="right">' . (int)$cashToday . '</td></tr>'
+            . '<tr><td>Recouvrement (auj.)</td><td align="right">' . (int)$collectionsToday . '</td></tr>'
             . '</tbody></table><br />';
         // Revenus série
         $html .= '<h4>Revenus (' . (int)$days . ' jours)</h4><table border="1" cellpadding="4"><thead><tr><th>Date</th><th>Montant</th></tr></thead><tbody>';
@@ -2579,6 +3036,38 @@ if ($path === '/transfers') {
 if ($path === '/stocks') {
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/stocks.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+
+// Seller rounds page (Remises livreurs)
+if ($path === '/seller-rounds') {
+    if (empty($_SESSION['user_id'])) {
+        header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
+        exit;
+    }
+    try {
+        audit_log((int)$_SESSION['user_id'], 'view', 'seller_rounds', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/seller_rounds.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+
+// Collections page (Recouvrement)
+if ($path === '/collections') {
+    if (empty($_SESSION['user_id'])) {
+        header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
+        exit;
+    }
+    try {
+        audit_log((int)$_SESSION['user_id'], 'view', 'collections', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/collections.php';
     include __DIR__ . '/../views/layout/footer.php';
     exit;
 }

@@ -26,16 +26,23 @@
             <a href="<?= $routeBase ?>/clients">Clients</a>
             <a href="<?= $routeBase ?>/orders">Commandes</a>
             <a href="<?= $routeBase ?>/transfers">Transferts</a>
+            <a href="<?= $routeBase ?>/seller-rounds">Remises</a>
+            <a href="<?= $routeBase ?>/collections">Recouvrement</a>
             <a href="<?= $routeBase ?>/users">Utilisateurs</a>
             <a href="<?= $routeBase ?>/logs">Logs</a>
-            <?php if (!empty($_SESSION['user_id'])): ?>
-                <span class="user">👤 <?= htmlspecialchars($_SESSION['user_name'] ?? 'Utilisateur') ?></span>
-                <a href="<?= $routeBase ?>/logout" class="btn logout">Déconnexion</a>
-            <?php else: ?>
-                <a href="<?= $routeBase ?>/login">Connexion</a>
-            <?php endif; ?>
+            <div class="nav-right">
+                <?php if (!empty($_SESSION['user_id'])): ?>
+                    <span class="user">👤 <?= htmlspecialchars($_SESSION['user_name'] ?? 'Utilisateur') ?></span>
+                    <a href="<?= $routeBase ?>/logout" class="btn logout">Déconnexion</a>
+                <?php else: ?>
+                    <a href="<?= $routeBase ?>/login">Connexion</a>
+                <?php endif; ?>
+            </div>
         </nav>
     </header>
+    <script>
+        window.APP_BASE = <?= json_encode($routeBase) ?>;
+    </script>
     <div class="toast-container" aria-live="polite" aria-atomic="true"></div>
     <script>
         (function() {

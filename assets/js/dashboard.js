@@ -112,11 +112,19 @@
     let clients = document.getElementById("qs-clients");
     let recv = document.getElementById("qs-receivables");
     let st = document.getElementById("qs-stock");
+    let sv = document.getElementById("qs-stock-valuation");
+    let roundsOpen = document.getElementById("qs-rounds-open");
+    let cashToday = document.getElementById("qs-cash-today");
+    let collToday = document.getElementById("qs-collections-today");
     if (ca) ca.textContent = q.ca_today;
     if (sales) sales.textContent = q.sales_today;
     if (clients) clients.textContent = q.active_clients;
     if (recv) recv.textContent = q.receivables_total ?? "—";
     if (st) st.textContent = stockTotal ?? "—";
+    if (sv) sv.textContent = q.stock_valuation ?? "—";
+    if (roundsOpen) roundsOpen.textContent = q.rounds_open ?? "—";
+    if (cashToday) cashToday.textContent = q.cash_turned_in_today ?? "—";
+    if (collToday) collToday.textContent = q.collections_today ?? "—";
   }
 
   function renderSparkline(points) {
@@ -176,8 +184,11 @@
     // Finance-driven blocks
     toggle("kpi-receivables", !!v.finance);
     toggle("block-revenue", !!v.finance);
+    toggle("kpi-cash-today", !!v.finance);
+    toggle("kpi-collections-today", !!v.finance);
     // Stocks
     toggle("kpi-stock", !!v.stocks);
+    toggle("kpi-stock-valuation", !!v.stocks);
     toggle("card-low-stock", !!v.stocks);
     // Clients
     toggle("card-clients", !!v.clients);

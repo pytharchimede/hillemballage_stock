@@ -57,6 +57,34 @@
             <div class="kpi-value" id="qs-stock">—</div>
         </div>
     </div>
+    <div class="kpi" id="kpi-stock-valuation">
+        <div class="kpi-icon"><i class="fa-solid fa-money-bill-wave"></i></div>
+        <div class="kpi-body">
+            <div class="kpi-label">Valorisation stock</div>
+            <div class="kpi-value" id="qs-stock-valuation">—</div>
+        </div>
+    </div>
+    <div class="kpi" id="kpi-rounds-open">
+        <div class="kpi-icon"><i class="fa-solid fa-truck-fast"></i></div>
+        <div class="kpi-body">
+            <div class="kpi-label">Tournées ouvertes</div>
+            <div class="kpi-value" id="qs-rounds-open">—</div>
+        </div>
+    </div>
+    <div class="kpi" id="kpi-cash-today">
+        <div class="kpi-icon"><i class="fa-solid fa-sack-dollar"></i></div>
+        <div class="kpi-body">
+            <div class="kpi-label">Cash remis (auj.)</div>
+            <div class="kpi-value" id="qs-cash-today">—</div>
+        </div>
+    </div>
+    <div class="kpi" id="kpi-collections-today">
+        <div class="kpi-icon"><i class="fa-solid fa-receipt"></i></div>
+        <div class="kpi-body">
+            <div class="kpi-label">Recouvrement (auj.)</div>
+            <div class="kpi-value" id="qs-collections-today">—</div>
+        </div>
+    </div>
     <button class="btn refresh" id="btn-refresh" title="Rafraîchir">↻ Rafraîchir</button>
     <div class="muted" id="role-hint" style="margin-left:auto"></div>
     <div style="clear:both"></div>
