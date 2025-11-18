@@ -35,19 +35,17 @@
     return token ? { Authorization: "Bearer " + token } : {};
   }
 
-  // Helper d'échappement HTML pour un rendu sûr
   function escapeHtml(str) {
     if (str === null || str === undefined) return "";
     return String(str)
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
-      .replace(/\"/g, "&quot;")
+      .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
   }
 
   function renderUsers(users) {
-    // Cards grid
     const grid = document.getElementById("users-grid");
     const empty = document.getElementById("users-empty");
     if (!grid) return;
@@ -96,11 +94,13 @@
                 ? `<button class="btn activate-btn" data-id="${u.id}" title="Activer"><i class="fa fa-toggle-on"></i></button>`
                 : `<button class="btn deactivate-btn" data-id="${u.id}" title="Désactiver"><i class="fa fa-toggle-off"></i></button>`
             }
+            <button class="btn reset-btn" data-id="${
+              u.id
+            }" title="Réinitialiser mot de passe"><i class="fa fa-key"></i></button>
           </div>
         </div>`;
       })
       .join("");
-    // Bind désactivation / activation
     grid.querySelectorAll(".deactivate-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
         const id = parseInt(btn.getAttribute("data-id"), 10);
@@ -114,13 +114,19 @@
         toggleActive(id, true);
       });
     });
+    grid.querySelectorAll(".reset-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = parseInt(btn.getAttribute("data-id"), 10);
+        if (!confirm("Réinitialiser le mot de passe ?")) return;
+        resetPassword(id);
+      });
+    });
   }
 
   async function load() {
     let token = localStorage.getItem("api_token") || readCookieToken() || "";
     const grid = document.getElementById("users-grid");
     const empty = document.getElementById("users-empty");
-    // Load depots once and populate filter without resetting current selection
     const depotFilter = document.getElementById("depot-filter");
     if (!depotsPopulated) {
       let depUrl =
@@ -136,11 +142,7 @@
           (token ? "?api_token=" + encodeURIComponent(token) : "");
         dr = await fetch(depUrl, { headers: authHeaders(token) });
       }
-      if (dr.ok) {
-        stateDepots = await dr.json();
-      } else {
-        stateDepots = [];
-      }
+      stateDepots = dr.ok ? await dr.json() : [];
       if (depotFilter) {
         const selected = depotFilter.value || "";
         depotFilter.innerHTML =
@@ -157,17 +159,17 @@
       }
       depotsPopulated = true;
     }
-
-    // Load users with filters
     const role = document.getElementById("role-filter")?.value || "";
     const q = document.getElementById("q-filter")?.value || "";
     const dep = document.getElementById("depot-filter")?.value || "";
+    const active = document.getElementById("active-filter")?.value || "";
+    const photo = document.getElementById("photo-filter")?.value || "";
     const params = new URLSearchParams();
     if (role) params.set("role", role);
     if (q) params.set("q", q);
     if (dep) params.set("depot_id", dep);
-    const active = document.getElementById("active-filter")?.value || "";
     if (active !== "") params.set("active", active);
+    if (photo !== "") params.set("has_photo", photo);
     let baseUsersUrl =
       routeBase +
       "/api/v1/users" +
@@ -208,8 +210,6 @@
     renderUsers(users);
   }
 
-  // formulaire déplacé sur /users/new et /users/edit
-
   const rf = document.getElementById("role-filter");
   if (rf) rf.addEventListener("change", load);
   const df = document.getElementById("depot-filter");
@@ -228,12 +228,14 @@
       if (df) df.value = "";
       const af = document.getElementById("active-filter");
       if (af) af.value = "";
+      const pf = document.getElementById("photo-filter");
+      if (pf) pf.value = "";
       load();
     });
   const af = document.getElementById("active-filter");
   if (af) af.addEventListener("change", load);
-
-  // Inline save supprimé (édition via /users/edit)
+  const pf = document.getElementById("photo-filter");
+  if (pf) pf.addEventListener("change", load);
 
   load();
 
@@ -261,5 +263,34 @@
       return;
     }
     load();
+  }
+
+  async function resetPassword(id) {
+    let token = localStorage.getItem("api_token") || readCookieToken() || "";
+    let url = routeBase + "/api/v1/users/" + id + "/reset-password";
+    if (token) url += "?api_token=" + encodeURIComponent(token);
+    let r = await fetch(url, { method: "POST", headers: authHeaders(token) });
+    if (r.status === 401) {
+      token = (await refreshSessionToken()) || token;
+      url = routeBase + "/api/v1/users/" + id + "/reset-password";
+      if (token) url += "?api_token=" + encodeURIComponent(token);
+      r = await fetch(url, { method: "POST", headers: authHeaders(token) });
+    }
+    if (!r.ok) {
+      try {
+        const j = await r.json();
+        alert("Erreur: " + (j.error || r.status));
+      } catch (_) {
+        alert("Erreur serveur");
+      }
+      return;
+    }
+    try {
+      const j = await r.json();
+      if (j.password) alert("Nouveau mot de passe: " + j.password);
+      else alert("Réinitialisation effectuée");
+    } catch (_) {
+      alert("Réinitialisé");
+    }
   }
 })();

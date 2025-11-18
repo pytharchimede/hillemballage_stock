@@ -789,6 +789,7 @@ if (str_starts_with($path, '/api/v1')) {
         $q = trim($_GET['q'] ?? '');
         $depotId = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
         $activeFilter = isset($_GET['active']) && $_GET['active'] !== '' ? ($_GET['active'] === '0' ? 0 : 1) : null;
+        $hasPhoto = isset($_GET['has_photo']) && $_GET['has_photo'] !== '' ? ($_GET['has_photo'] === '1' ? 1 : 0) : null;
         $where = [];
         $params = [];
         if ($role !== '') {
@@ -806,6 +807,13 @@ if (str_starts_with($path, '/api/v1')) {
         if ($activeFilter !== null) {
             $where[] = 'active = :ac';
             $params[':ac'] = $activeFilter;
+        }
+        if ($hasPhoto !== null) {
+            if ($hasPhoto === 1) {
+                $where[] = '(photo_path IS NOT NULL AND photo_path <> "")';
+            } else {
+                $where[] = '(photo_path IS NULL OR photo_path = "")';
+            }
         }
         $sql = 'SELECT id,name,email,role,depot_id,permissions,photo_path,active,created_at FROM users';
         if ($where) {
@@ -1661,29 +1669,43 @@ if ($path === '/users/export') {
         . '<div class="cid-footer">Document généré automatiquement - Confidentialité requise.</div>'
         . '</div>';
     $pdf->writeHTML($html);
-    // QR code simplifié HTML (sans librairie) basé sur hash
+    // QR code: réel si librairie installée (chillerlan/php-qrcode), fallback simplifié sinon
     $qrData = 'HILLUSER:' . $usr['id'] . ';' . ($usr['email'] ?? '') . ';' . ($usr['role'] ?? '');
-    $hash = md5($qrData); // 32 hex -> utiliser pour motif
-    $size = 21;
-    $bitSeq = '';
-    // Expand hash pour remplir grille size*size (441 bits) en répétant
-    while (strlen($bitSeq) < $size * $size) {
-        foreach (str_split($hash) as $ch) {
-            $bitSeq .= (hexdec($ch) % 2) ? '1' : '0';
-            if (strlen($bitSeq) >= $size * $size) break;
+    if (class_exists('chillerlan\\QRCode\\QRCode') && class_exists('chillerlan\\QRCode\\QROptions')) {
+        try {
+            $opts = new chillerlan\QRCode\QROptions([
+                'outputType' => chillerlan\QRCode\QRCode::OUTPUT_MARKUP_SVG,
+                'eccLevel' => chillerlan\QRCode\QRCode::ECC_L,
+                'scale' => 3,
+                'addQuietzone' => true,
+            ]);
+            $qrSVG = (new chillerlan\QRCode\QRCode($opts))->render($qrData);
+            $html .= '<div style="margin-top:12px">' . $qrSVG . '</div>';
+        } catch (\Throwable $e) {
+            $html .= '<div style="margin-top:12px;font-size:7px;color:#b00">QR erreur: ' . htmlspecialchars($e->getMessage()) . '</div>';
         }
-    }
-    $html .= '<div style="margin-top:12px"><table cellspacing="0" cellpadding="0" style="border:1px solid #333">';
-    $idx = 0;
-    for ($y = 0; $y < $size; $y++) {
-        $html .= '<tr>';
-        for ($x = 0; $x < $size; $x++) {
-            $b = $bitSeq[$idx++] === '1';
-            $html .= '<td style="width:3mm;height:3mm;background:' . ($b ? '#000' : '#fff') . '"></td>';
+    } else {
+        $hash = md5($qrData);
+        $size = 21;
+        $bitSeq = '';
+        while (strlen($bitSeq) < $size * $size) {
+            foreach (str_split($hash) as $ch) {
+                $bitSeq .= (hexdec($ch) % 2) ? '1' : '0';
+                if (strlen($bitSeq) >= $size * $size) break;
+            }
         }
-        $html .= '</tr>';
+        $html .= '<div style="margin-top:12px"><table cellspacing="0" cellpadding="0" style="border:1px solid #333">';
+        $idx = 0;
+        for ($y = 0; $y < $size; $y++) {
+            $html .= '<tr>';
+            for ($x = 0; $x < $size; $x++) {
+                $b = $bitSeq[$idx++] === '1';
+                $html .= '<td style="width:3mm;height:3mm;background:' . ($b ? '#000' : '#fff') . '"></td>';
+            }
+            $html .= '</tr>';
+        }
+        $html .= '</table><div style="font-size:7px;color:#666;text-align:center">QR simplifié</div></div>';
     }
-    $html .= '</table><div style="font-size:7px;color:#666;text-align:center">QR simplifié</div></div>';
     $pdf->writeHTML($html);
     $pdf->Output('fiche_utilisateur_' . $id . '.pdf', 'I');
     exit;

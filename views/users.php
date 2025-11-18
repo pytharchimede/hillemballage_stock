@@ -30,6 +30,14 @@ $assetBase = preg_replace('#/public$#', '', $scriptDir);
                 <option value="0">Inactifs</option>
             </select>
         </div>
+        <div class="form-field" style="min-width:150px">
+            <label for="photo-filter">Photo</label>
+            <select id="photo-filter" class="form-control">
+                <option value="">Tous</option>
+                <option value="1">Avec photo</option>
+                <option value="0">Sans photo</option>
+            </select>
+        </div>
         <div class="form-field" style="min-width:220px">
             <label for="depot-filter">Dépôt</label>
             <select id="depot-filter" class="form-control"></select>
