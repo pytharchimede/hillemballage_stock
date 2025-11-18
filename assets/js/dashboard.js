@@ -8,6 +8,7 @@
     period: document.getElementById("period-select"),
     depot: document.getElementById("depot-select"),
     depotLabel: document.getElementById("depot-label"),
+    threshold: document.getElementById("threshold-select"),
   };
 
   async function fetchSummary() {
@@ -21,6 +22,8 @@
     if (els.period && els.period.value) q.set("days", els.period.value);
     if (els.depot && els.depot.style.display !== "none" && els.depot.value)
       q.set("depot_id", els.depot.value);
+    if (els.threshold && els.threshold.value)
+      q.set("threshold", els.threshold.value);
     const r = await fetch(
       "/api/v1/summary" + (q.toString() ? "?" + q.toString() : ""),
       { headers }
@@ -67,6 +70,12 @@
     renderSalesByUser(data.sales_by_user_30d || []);
     renderLowStock(data.low_stock || []);
     renderLatestSales(data.latest_sales || []);
+
+    // Update title with threshold
+    const lst = document.getElementById("low-stock-title");
+    if (lst && els.threshold && els.threshold.value) {
+      lst.textContent = `Produits en alerte stock (≤ ${els.threshold.value})`;
+    }
   }
 
   function renderDaily(rows, total) {
@@ -290,6 +299,44 @@
 
   if (els.period) els.period.addEventListener("change", fetchSummary);
   if (els.depot) els.depot.addEventListener("change", fetchSummary);
+  if (els.threshold) els.threshold.addEventListener("change", fetchSummary);
+
+  // Export handlers
+  function currentFiltersQuery(withToken = false) {
+    const q = new URLSearchParams();
+    if (els.period && els.period.value) q.set("days", els.period.value);
+    if (els.depot && els.depot.style.display !== "none" && els.depot.value)
+      q.set("depot_id", els.depot.value);
+    if (els.threshold && els.threshold.value)
+      q.set("threshold", els.threshold.value);
+    if (withToken) {
+      const token = (
+        localStorage.getItem("api_token") ||
+        getCookie("api_token") ||
+        ""
+      ).trim();
+      if (token) q.set("api_token", token);
+    }
+    return q;
+  }
+
+  const btnCsv = document.getElementById("btn-export-csv");
+  if (btnCsv) {
+    btnCsv.addEventListener("click", () => {
+      const q = currentFiltersQuery(true);
+      window.location.href =
+        "/api/v1/dashboard/export" + (q.toString() ? "?" + q.toString() : "");
+    });
+  }
+  const btnPdf = document.getElementById("btn-export-pdf");
+  if (btnPdf) {
+    btnPdf.addEventListener("click", () => {
+      const q = currentFiltersQuery(true);
+      window.location.href =
+        "/api/v1/dashboard/export-pdf" +
+        (q.toString() ? "?" + q.toString() : "");
+    });
+  }
 
   fetchSummary();
 })();

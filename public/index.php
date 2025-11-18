@@ -944,6 +944,8 @@ if (str_starts_with($path, '/api/v1')) {
         $days = (int)($_GET['days'] ?? 30);
         if (!in_array($days, [7, 30, 90], true)) $days = 30;
         $paramDepot = isset($_GET['depot_id']) ? (int)$_GET['depot_id'] : null;
+        $threshold = (int)($_GET['threshold'] ?? 5);
+        if (!in_array($threshold, [3, 5, 10], true)) $threshold = 5;
 
         // Scope helpers (sales)
         $salesWhere = [];
@@ -1024,7 +1026,6 @@ if (str_starts_with($path, '/api/v1')) {
         $topProducts = DB::query('SELECT p.name, SUM(si.subtotal) total FROM sale_items si JOIN sales s ON s.id=si.sale_id JOIN products p ON p.id=si.product_id' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' s.sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY p.id,p.name ORDER BY total DESC LIMIT 10', $salesParams);
 
         // Low stock products (<= threshold)
-        $threshold = 5;
         $lowStock = DB::query('SELECT p.id, p.name, COALESCE(SUM(s.quantity),0) qty FROM products p LEFT JOIN stocks s ON s.product_id=p.id' . ($stockScopeSql ? $stockScopeSql : '') . ' GROUP BY p.id,p.name HAVING qty <= :th ORDER BY qty ASC, p.name ASC LIMIT 10', $stockParams + [':th' => $threshold]);
 
         // Orders status distribution (global or scope-agnostic)
@@ -1071,8 +1072,25 @@ if (str_starts_with($path, '/api/v1')) {
             'role' => $role
         ];
 
+        // Server-side KPI masking based on visibility flags
+        if (!$visibility['finance']) {
+            $receivablesTotal = null;
+            $series30 = [];
+        }
+        if (!$visibility['stocks']) {
+            $stockTotal = null;
+            $lowStock = [];
+            $stockLines = [];
+        }
+        if (!$visibility['clients']) {
+            $topBalances = [];
+        }
+        if (!$visibility['users']) {
+            $byUser = [];
+        }
+
         echo json_encode([
-            'stock_total' => (int)$stockTotal,
+            'stock_total' => $stockTotal !== null ? (int)$stockTotal : null,
             'stock_items' => $stockLines,
             'top_balances' => $topBalances,
             'daily' => $daily,
@@ -1081,7 +1099,7 @@ if (str_starts_with($path, '/api/v1')) {
                 'sales_today' => $salesToday,
                 'active_clients' => $activeClients30,
                 'receivables_total' => $receivablesTotal,
-                'window' => '30d'
+                'window' => $days . 'd'
             ],
             'sparkline' => $spark,
             'revenue_30d' => $series30,
@@ -1847,6 +1865,261 @@ if (str_starts_with($path, '/api/v1')) {
         $html .= '</tbody></table>';
         $pdf->writeHTML($html, true, false, true, false, '');
         $pdf->Output('audit_logs.pdf', 'I');
+        exit;
+    }
+    // Dashboard export CSV
+    if ($path === '/api/v1/dashboard/export' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $auth = requireAuth();
+        $role = (string)($auth['role'] ?? '');
+        $uid = (int)($auth['id'] ?? 0);
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
+        $days = (int)($_GET['days'] ?? 30);
+        if (!in_array($days, [7, 30, 90], true)) $days = 30;
+        $paramDepot = isset($_GET['depot_id']) ? (int)$_GET['depot_id'] : null;
+        $threshold = (int)($_GET['threshold'] ?? 5);
+        if (!in_array($threshold, [3, 5, 10], true)) $threshold = 5;
+
+        // Scopes
+        $salesWhere = [];
+        $salesParams = [];
+        if ($role === 'admin') {
+            if ($paramDepot && $paramDepot > 0) {
+                $salesWhere[] = 'depot_id = :dep';
+                $salesParams[':dep'] = $paramDepot;
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $salesWhere[] = 'depot_id = :dep';
+            $salesParams[':dep'] = $userDepotId;
+        } else {
+            $salesWhere[] = 'user_id = :uid';
+            $salesParams[':uid'] = $uid;
+        }
+        $salesScopeSql = $salesWhere ? (' WHERE ' . implode(' AND ', $salesWhere)) : '';
+
+        $stockWhere = [];
+        $stockParams = [];
+        if ($role === 'gerant' && $userDepotId > 0) {
+            $stockWhere[] = 's.depot_id = :dep';
+            $stockParams[':dep'] = $userDepotId;
+        }
+        $stockScopeSql = $stockWhere ? (' WHERE ' . implode(' AND ', $stockWhere)) : '';
+
+        // Data
+        $stockTotal = (int)(DB::query('SELECT COALESCE(SUM(quantity),0) qty FROM stocks s' . ($stockScopeSql ? $stockScopeSql : ''))[0]['qty'] ?? 0);
+        $topBalances = DB::query('SELECT c.id, c.name, (SUM(s.total_amount) - SUM(s.amount_paid)) AS balance FROM sales s JOIN clients c ON c.id = s.client_id' . $salesScopeSql . ' GROUP BY c.id,c.name HAVING balance > 0 ORDER BY balance DESC LIMIT 5', $salesParams);
+        $today = date('Y-m-d');
+        $dailyDepot = $userDepotId > 0 ? $userDepotId : 1;
+        $daily = ReportService::daily($dailyDepot, $today);
+        $caToday = (int)(DB::query('SELECT COALESCE(SUM(total_amount),0) v FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' DATE(sold_at)=CURDATE()', $salesParams)[0]['v'] ?? 0);
+        $salesToday = (int)(DB::query('SELECT COUNT(*) c FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' DATE(sold_at)=CURDATE()', $salesParams)[0]['c'] ?? 0);
+        $activeClients30 = (int)(DB::query('SELECT COUNT(DISTINCT client_id) c FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)', $salesParams)[0]['c'] ?? 0);
+        $receivablesTotal = (int)(DB::query('SELECT COALESCE(SUM(total_amount - amount_paid),0) v FROM sales' . $salesScopeSql, $salesParams)[0]['v'] ?? 0);
+        $rowsSeries = DB::query('SELECT DATE(sold_at) d, SUM(total_amount) v FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' sold_at >= DATE_SUB(CURDATE(), INTERVAL ' . ($days - 1) . ' DAY) GROUP BY DATE(sold_at) ORDER BY d ASC', $salesParams);
+        $topProducts = DB::query('SELECT p.name, SUM(si.subtotal) total FROM sale_items si JOIN sales s ON s.id=si.sale_id JOIN products p ON p.id=si.product_id' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' s.sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY p.id,p.name ORDER BY total DESC LIMIT 10', $salesParams);
+        $lowStock = DB::query('SELECT p.id, p.name, COALESCE(SUM(s.quantity),0) qty FROM products p LEFT JOIN stocks s ON s.product_id=p.id' . ($stockScopeSql ? $stockScopeSql : '') . ' GROUP BY p.id,p.name HAVING qty <= :th ORDER BY qty ASC, p.name ASC LIMIT 10', $stockParams + [':th' => $threshold]);
+        $ordersStatus = DB::query('SELECT status, COUNT(*) c FROM orders GROUP BY status');
+        $byUser = DB::query('SELECT u.id, u.name, SUM(s.total_amount) total FROM sales s JOIN users u ON u.id=s.user_id' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' s.sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY u.id,u.name ORDER BY total DESC LIMIT 5', $salesParams);
+
+        header('Content-Type: text/csv; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="dashboard.csv"');
+        $out = fopen('php://output', 'w');
+        // Filters
+        fputcsv($out, ['Dashboard export']);
+        fputcsv($out, ['Période (jours)', $days]);
+        fputcsv($out, ['Dépôt ciblé', ($paramDepot && $role === 'admin') ? $paramDepot : ($role === 'gerant' ? $userDepotId : '—')]);
+        fputcsv($out, ['Seuil alerte stock', $threshold]);
+        fputcsv($out, []);
+
+        // Quick stats
+        fputcsv($out, ['Quick stats']);
+        fputcsv($out, ['CA du jour', $caToday]);
+        fputcsv($out, ['Ventes du jour', $salesToday]);
+        fputcsv($out, ['Clients actifs (30j)', $activeClients30]);
+        fputcsv($out, ['Encours (créances)', $receivablesTotal]);
+        fputcsv($out, ['Stock total', $stockTotal]);
+        fputcsv($out, []);
+
+        // Revenue series
+        fputcsv($out, ['Revenus sur ' . $days . ' jours']);
+        fputcsv($out, ['Date', 'Montant']);
+        foreach ($rowsSeries as $r) fputcsv($out, [$r['d'], (int)$r['v']]);
+        fputcsv($out, []);
+
+        // Top products
+        fputcsv($out, ['Top produits (30j)']);
+        fputcsv($out, ['Produit', 'Total']);
+        foreach ($topProducts as $r) fputcsv($out, [$r['name'], (int)$r['total']]);
+        fputcsv($out, []);
+
+        // Orders status
+        fputcsv($out, ['Répartition commandes']);
+        fputcsv($out, ['Statut', 'Nombre']);
+        foreach ($ordersStatus as $r) fputcsv($out, [$r['status'], (int)$r['c']]);
+        fputcsv($out, []);
+
+        // Sales by user
+        fputcsv($out, ['Ventes par utilisateur (30j)']);
+        fputcsv($out, ['Utilisateur', 'CA']);
+        foreach ($byUser as $r) fputcsv($out, [($r['name'] ?? ('#' . $r['id'])), (int)$r['total']]);
+        fputcsv($out, []);
+
+        // Low stock
+        fputcsv($out, ['Produits en alerte (<= ' . $threshold . ')']);
+        fputcsv($out, ['Produit', 'Stock']);
+        foreach ($lowStock as $r) fputcsv($out, [$r['name'], (int)$r['qty']]);
+        fputcsv($out, []);
+
+        // Top balances
+        fputcsv($out, ['Top soldes clients']);
+        fputcsv($out, ['Client', 'Solde']);
+        foreach ($topBalances as $r) fputcsv($out, [$r['name'], (int)$r['balance']]);
+        fputcsv($out, []);
+
+        // Daily sales table
+        fputcsv($out, ['Ventes du jour (dépôt ' . $dailyDepot . ')']);
+        fputcsv($out, ['Article', 'PU', 'Sorties', 'Retourné', 'Vendu', 'Montant']);
+        foreach ($daily['rows'] as $row) {
+            fputcsv($out, [$row['name'], (int)$row['unit_price'], (int)$row['sorties'], (int)$row['retourne'], (int)$row['vendu'], (int)$row['montant']]);
+        }
+        fputcsv($out, ['TOTAL', '', '', '', '', (int)$daily['total_montant']]);
+        fclose($out);
+        // Audit export
+        try {
+            audit_log((int)$auth['id'], 'export', 'dashboard', null, $path, 'GET', ['days' => $days, 'depot' => $paramDepot, 'threshold' => $threshold]);
+        } catch (\Throwable $e) {
+        }
+        exit;
+    }
+    // Dashboard export PDF
+    if ($path === '/api/v1/dashboard/export-pdf' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $auth = requireAuth();
+        $role = (string)($auth['role'] ?? '');
+        $uid = (int)($auth['id'] ?? 0);
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
+        $days = (int)($_GET['days'] ?? 30);
+        if (!in_array($days, [7, 30, 90], true)) $days = 30;
+        $paramDepot = isset($_GET['depot_id']) ? (int)$_GET['depot_id'] : null;
+        $threshold = (int)($_GET['threshold'] ?? 5);
+        if (!in_array($threshold, [3, 5, 10], true)) $threshold = 5;
+        if (!class_exists('TCPDF')) {
+            try {
+                @include_once __DIR__ . '/../vendor/tecnickcom/tcpdf/tcpdf.php';
+            } catch (\Throwable $e) {
+            }
+        }
+        if (!class_exists('TCPDF')) {
+            http_response_code(500);
+            echo 'TCPDF non installé. Installez avec: composer require tecnickcom/tcpdf';
+            exit;
+        }
+
+        // Scopes
+        $salesWhere = [];
+        $salesParams = [];
+        if ($role === 'admin') {
+            if ($paramDepot && $paramDepot > 0) {
+                $salesWhere[] = 'depot_id = :dep';
+                $salesParams[':dep'] = $paramDepot;
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $salesWhere[] = 'depot_id = :dep';
+            $salesParams[':dep'] = $userDepotId;
+        } else {
+            $salesWhere[] = 'user_id = :uid';
+            $salesParams[':uid'] = $uid;
+        }
+        $salesScopeSql = $salesWhere ? (' WHERE ' . implode(' AND ', $salesWhere)) : '';
+        $stockWhere = [];
+        $stockParams = [];
+        if ($role === 'gerant' && $userDepotId > 0) {
+            $stockWhere[] = 's.depot_id = :dep';
+            $stockParams[':dep'] = $userDepotId;
+        }
+        $stockScopeSql = $stockWhere ? (' WHERE ' . implode(' AND ', $stockWhere)) : '';
+
+        // Data
+        $stockTotal = (int)(DB::query('SELECT COALESCE(SUM(quantity),0) qty FROM stocks s' . ($stockScopeSql ? $stockScopeSql : ''))[0]['qty'] ?? 0);
+        $topBalances = DB::query('SELECT c.id, c.name, (SUM(s.total_amount) - SUM(s.amount_paid)) AS balance FROM sales s JOIN clients c ON c.id = s.client_id' . $salesScopeSql . ' GROUP BY c.id,c.name HAVING balance > 0 ORDER BY balance DESC LIMIT 5', $salesParams);
+        $today = date('Y-m-d');
+        $dailyDepot = $userDepotId > 0 ? $userDepotId : 1;
+        $daily = ReportService::daily($dailyDepot, $today);
+        $caToday = (int)(DB::query('SELECT COALESCE(SUM(total_amount),0) v FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' DATE(sold_at)=CURDATE()', $salesParams)[0]['v'] ?? 0);
+        $salesToday = (int)(DB::query('SELECT COUNT(*) c FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' DATE(sold_at)=CURDATE()', $salesParams)[0]['c'] ?? 0);
+        $activeClients30 = (int)(DB::query('SELECT COUNT(DISTINCT client_id) c FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)', $salesParams)[0]['c'] ?? 0);
+        $receivablesTotal = (int)(DB::query('SELECT COALESCE(SUM(total_amount - amount_paid),0) v FROM sales' . $salesScopeSql, $salesParams)[0]['v'] ?? 0);
+        $rowsSeries = DB::query('SELECT DATE(sold_at) d, SUM(total_amount) v FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' sold_at >= DATE_SUB(CURDATE(), INTERVAL ' . ($days - 1) . ' DAY) GROUP BY DATE(sold_at) ORDER BY d ASC', $salesParams);
+        $topProducts = DB::query('SELECT p.name, SUM(si.subtotal) total FROM sale_items si JOIN sales s ON s.id=si.sale_id JOIN products p ON p.id=si.product_id' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' s.sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY p.id,p.name ORDER BY total DESC LIMIT 10', $salesParams);
+        $lowStock = DB::query('SELECT p.id, p.name, COALESCE(SUM(s.quantity),0) qty FROM products p LEFT JOIN stocks s ON s.product_id=p.id' . ($stockScopeSql ? $stockScopeSql : '') . ' GROUP BY p.id,p.name HAVING qty <= :th ORDER BY qty ASC, p.name ASC LIMIT 10', $stockParams + [':th' => $threshold]);
+        $ordersStatus = DB::query('SELECT status, COUNT(*) c FROM orders GROUP BY status');
+        $byUser = DB::query('SELECT u.id, u.name, SUM(s.total_amount) total FROM sales s JOIN users u ON u.id=s.user_id' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' s.sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY u.id,u.name ORDER BY total DESC LIMIT 5', $salesParams);
+
+        // PDF
+        $pdf = new \TCPDF('P', 'mm', 'A4');
+        $pdf->SetCreator('Hill Stock');
+        $pdf->SetAuthor('Hill Stock');
+        $pdf->SetTitle('Dashboard');
+        $pdf->AddPage();
+        $html = '<h2 style="margin:0 0 6px">Tableau de bord</h2>';
+        $html .= '<div style="font-size:10px;color:#666">Généré le ' . htmlspecialchars(date('Y-m-d H:i')) . ' — Période: ' . (int)$days . 'j — Seuil: ' . (int)$threshold . '</div>';
+        $html .= '<br />';
+        // Quick stats
+        $html .= '<h4>Indicateurs</h4><table border="1" cellpadding="4"><tbody>'
+            . '<tr><td>CA du jour</td><td align="right">' . (int)$caToday . '</td></tr>'
+            . '<tr><td>Ventes du jour</td><td align="right">' . (int)$salesToday . '</td></tr>'
+            . '<tr><td>Clients actifs (30j)</td><td align="right">' . (int)$activeClients30 . '</td></tr>'
+            . '<tr><td>Encours (créances)</td><td align="right">' . (int)$receivablesTotal . '</td></tr>'
+            . '<tr><td>Stock total</td><td align="right">' . (int)$stockTotal . '</td></tr>'
+            . '</tbody></table><br />';
+        // Revenus série
+        $html .= '<h4>Revenus (' . (int)$days . ' jours)</h4><table border="1" cellpadding="4"><thead><tr><th>Date</th><th>Montant</th></tr></thead><tbody>';
+        foreach ($rowsSeries as $r) {
+            $html .= '<tr><td>' . htmlspecialchars($r['d']) . '</td><td align="right">' . (int)$r['v'] . '</td></tr>';
+        }
+        $html .= '</tbody></table><br />';
+        // Top produits
+        $html .= '<h4>Top produits (30j)</h4><table border="1" cellpadding="4"><thead><tr><th>Produit</th><th>Total</th></tr></thead><tbody>';
+        foreach ($topProducts as $r) {
+            $html .= '<tr><td>' . htmlspecialchars($r['name']) . '</td><td align="right">' . (int)$r['total'] . '</td></tr>';
+        }
+        $html .= '</tbody></table><br />';
+        // Commandes
+        $html .= '<h4>Répartition commandes</h4><table border="1" cellpadding="4"><thead><tr><th>Statut</th><th>Nombre</th></tr></thead><tbody>';
+        foreach ($ordersStatus as $r) {
+            $html .= '<tr><td>' . htmlspecialchars($r['status']) . '</td><td align="right">' . (int)$r['c'] . '</td></tr>';
+        }
+        $html .= '</tbody></table><br />';
+        // Par utilisateur
+        $html .= '<h4>Ventes par utilisateur (30j)</h4><table border="1" cellpadding="4"><thead><tr><th>Utilisateur</th><th>CA</th></tr></thead><tbody>';
+        foreach ($byUser as $r) {
+            $html .= '<tr><td>' . htmlspecialchars(($r['name'] ?? ('#' . $r['id']))) . '</td><td align="right">' . (int)$r['total'] . '</td></tr>';
+        }
+        $html .= '</tbody></table><br />';
+        // Low stock
+        $html .= '<h4>Produits en alerte (≤ ' . (int)$threshold . ')</h4><table border="1" cellpadding="4"><thead><tr><th>Produit</th><th>Stock</th></tr></thead><tbody>';
+        foreach ($lowStock as $r) {
+            $html .= '<tr><td>' . htmlspecialchars($r['name']) . '</td><td align="right">' . (int)$r['qty'] . '</td></tr>';
+        }
+        $html .= '</tbody></table><br />';
+        // Soldes clients
+        $html .= '<h4>Top soldes clients</h4><table border="1" cellpadding="4"><thead><tr><th>Client</th><th>Solde</th></tr></thead><tbody>';
+        foreach ($topBalances as $r) {
+            $html .= '<tr><td>' . htmlspecialchars($r['name']) . '</td><td align="right">' . (int)$r['balance'] . '</td></tr>';
+        }
+        $html .= '</tbody></table><br />';
+        // Ventes du jour
+        $html .= '<h4>Ventes du jour (dépôt ' . (int)$dailyDepot . ')</h4><table border="1" cellpadding="4"><thead><tr><th>Article</th><th>PU</th><th>Sorties</th><th>Retourné</th><th>Vendu</th><th>Montant</th></tr></thead><tbody>';
+        foreach ($daily['rows'] as $row) {
+            $html .= '<tr><td>' . htmlspecialchars($row['name']) . '</td><td align="right">' . (int)$row['unit_price'] . '</td><td align="right">' . (int)$row['sorties'] . '</td><td align="right">' . (int)$row['retourne'] . '</td><td align="right">' . (int)$row['vendu'] . '</td><td align="right">' . (int)$row['montant'] . '</td></tr>';
+        }
+        $html .= '<tr><th colspan="5" align="right">Total</th><th align="right">' . (int)$daily['total_montant'] . '</th></tr>';
+        $html .= '</tbody></table>';
+        $pdf->writeHTML($html, true, false, true, false, '');
+        $pdf->Output('dashboard.pdf', 'I');
+        // Audit export
+        try {
+            audit_log((int)$auth['id'], 'export', 'dashboard', null, $path, 'GET', ['days' => $days, 'depot' => $paramDepot, 'threshold' => $threshold]);
+        } catch (\Throwable $e) {
+        }
         exit;
     }
     http_response_code(404);

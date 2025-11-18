@@ -24,6 +24,9 @@ body{margin:0;font-family:'Segoe UI',system-ui,-apple-system,Segoe UI,Roboto,Ari
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
 .card{background:var(--card);border:1px solid var(--border-muted);border-radius:12px;padding:18px;box-shadow:0 6px 20px rgba(0,0,0,.06);transition:transform .15s ease, box-shadow .15s ease}
 .card:hover{transform:translateY(-2px);box-shadow:0 10px 28px rgba(0,0,0,.10)}
+.card h3{margin:0 0 .6rem; display:flex; align-items:center; gap:.5rem; font-size:1.05rem}
+.card h3 .icon{display:inline-flex; width:28px; height:28px; border-radius:8px; align-items:center; justify-content:center; background:linear-gradient(135deg,var(--primary-start),var(--primary-end)); color:#222}
+.grid-2{display:grid; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); gap:16px}
 .quick-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:10px 0 24px;align-items:stretch}
 .quick-stats .qs-item{background:linear-gradient(135deg,var(--primary-start) 0%, var(--primary-end) 100%);padding:12px 14px;border-radius:14px;position:relative;overflow:hidden;color:#222;box-shadow:0 4px 14px rgba(0,0,0,.12)}
 .quick-stats .qs-item:before{content:"";position:absolute;right:-20px;top:-20px;width:80px;height:80px;background:rgba(255,255,255,0.35);border-radius:50%}
@@ -187,3 +190,16 @@ input.form-control { min-height:44px }
 .table tbody td{ padding:.55rem .7rem; border-bottom:1px solid #f1f1f1; font-size:.95rem }
 .table tbody tr:hover{ background:#fffdf5 }
 .table-responsive{ width:100%; overflow:auto }
+
+/* --- KPI Cards (dashboard) --- */
+.kpi-cards{ display:grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap:12px; align-items:stretch; margin:8px 0 14px }
+.kpi-cards .kpi{ position:relative; display:flex; align-items:center; gap:.75rem; padding:14px; background:#fff; border:1px solid #eee; border-radius:14px; box-shadow:0 6px 18px rgba(0,0,0,.06) }
+.kpi-cards .kpi .kpi-icon{ width:42px; height:42px; border-radius:12px; display:flex; align-items:center; justify-content:center; color:#222; background:linear-gradient(135deg,var(--primary-start), var(--primary-end)); box-shadow:0 4px 10px rgba(0,0,0,.08) }
+.kpi-cards .kpi .kpi-body{ display:flex; flex-direction:column }
+.kpi-cards .kpi .kpi-label{ font-size:.78rem; letter-spacing:.3px; text-transform:uppercase; color:#555; font-weight:700 }
+.kpi-cards .kpi .kpi-value{ font-size:1.5rem; font-weight:800; color:#222; line-height:1.1 }
+.kpi-cards .refresh{ justify-self:end }
+
+/* --- Toolbar improvements --- */
+.toolbar .form-control.compact{ min-height:38px }
+.toolbar label.muted{ font-weight:600; color:#555 }
