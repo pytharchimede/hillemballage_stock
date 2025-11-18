@@ -10,7 +10,10 @@ include __DIR__ . '/layout/header.php';
 <div class="card">
     <div class="card-body">
         <label for="permUserSelect">Utilisateur:</label>
-        <select id="permUserSelect"></select>
+        <div class="select-search" data-target="permUserSelect" style="max-width:320px">
+            <input type="text" class="form-control" placeholder="Rechercher utilisateur (nom ou id)…" autocomplete="off">
+            <select id="permUserSelect" class="form-control"></select>
+        </div>
         <button id="reloadPerm" class="btn">Recharger</button>
     </div>
 </div>

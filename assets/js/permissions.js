@@ -5,6 +5,12 @@
     ? { Authorization: "Bearer " + token, "Content-Type": "application/json" }
     : { "Content-Type": "application/json" };
   const userSelect = document.getElementById("permUserSelect");
+  const userSearchWrapper = document.querySelector(
+    '.select-search[data-target="permUserSelect"]'
+  );
+  const userSearchInput = userSearchWrapper
+    ? userSearchWrapper.querySelector("input")
+    : null;
   const tableBody = document.querySelector("#permTable tbody");
   const statusEl = document.getElementById("permStatus");
   const reloadBtn = document.getElementById("reloadPerm");
@@ -42,10 +48,46 @@
   function loadEntities() {
     return fetchJSON(BASE + "/api/v1/permissions/entities", { headers });
   }
-  function loadUsers() {
-    return fetchJSON(BASE + "/api/v1/users?limit=500", { headers }).catch(
-      () => ({ users: [] })
+  // Récupération normalisée de la liste utilisateurs (toujours un tableau)
+  async function fetchUsers() {
+    const res = await fetchJSON(BASE + "/api/v1/users", { headers }).catch(
+      () => []
     );
+    if (Array.isArray(res)) return res;
+    if (res && Array.isArray(res.users)) return res.users;
+    return [];
+  }
+  let allUsersCache = [];
+
+  // Charge et rend les options utilisateurs
+  async function loadUsers() {
+    const users = await fetchUsers();
+    allUsersCache = users;
+    renderUserOptions(users);
+    return users;
+  }
+
+  function renderUserOptions(list) {
+    userSelect.innerHTML = "";
+    list.forEach((u) => {
+      const opt = document.createElement("option");
+      opt.value = u.id;
+      opt.textContent = u.name ? `${u.name} (#${u.id})` : `#${u.id}`;
+      userSelect.appendChild(opt);
+    });
+  }
+
+  function filterUsers(term) {
+    term = term.trim().toLowerCase();
+    if (!term) {
+      renderUserOptions(allUsersCache);
+      return;
+    }
+    const filtered = allUsersCache.filter((u) => {
+      const label = (u.name ? u.name : "") + " " + u.id;
+      return label.toLowerCase().includes(term);
+    });
+    renderUserOptions(filtered);
   }
   function loadUserPerm(uid) {
     return fetchJSON(BASE + "/api/v1/permissions/user?user_id=" + uid, {
@@ -137,31 +179,36 @@
       .catch((e) => toast("Erreur sauvegarde: " + e.message));
   }
 
-  Promise.all([loadEntities(), loadUsers()])
-    .then(([ents, us]) => {
-      entities = ents.entities || {};
-      const list = us.users || us || [];
-      userSelect.innerHTML =
-        '<option value="">-- Choisir --</option>' +
-        list
-          .map(
-            (u) =>
-              '\n<option value="' +
-              u.id +
-              '">' +
-              (u.name || "#" + u.id) +
-              " (" +
-              u.role +
-              ")</option>"
-          )
-          .join("");
-    })
-    .catch(() => toast("Erreur initialisation"));
+  async function init() {
+    try {
+      const [ents, users] = await Promise.all([loadEntities(), loadUsers()]);
+      entities = ents.entities || ents || {};
+      // Sélectionne le premier utilisateur et charge ses permissions
+      if (users.length) {
+        currentUserId = users[0].id;
+        userSelect.value = String(currentUserId);
+        refresh();
+      }
+    } catch (e) {
+      toast("Erreur initialisation: " + e.message);
+    }
+  }
 
   userSelect.addEventListener("change", () => {
     currentUserId = parseInt(userSelect.value, 10) || null;
     if (currentUserId) refresh();
   });
+
+  if (userSearchInput) {
+    let debounceTimer;
+    userSearchInput.addEventListener("input", () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        filterUsers(userSearchInput.value);
+      }, 180);
+    });
+  }
   reloadBtn.addEventListener("click", refresh);
   saveBtn.addEventListener("click", save);
+  init();
 })();
