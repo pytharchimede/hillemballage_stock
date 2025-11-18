@@ -1,4 +1,5 @@
 (function () {
+  const BASE = (window.ROUTE_BASE || window.APP_BASE || "").replace(/\/$/, "");
   function getCookie(name) {
     const parts = ("; " + document.cookie).split("; " + name + "=");
     if (parts.length === 2) return parts.pop().split(";").shift();
@@ -31,7 +32,9 @@
 
   async function loadDepots() {
     try {
-      const r = await fetch("/api/v1/depots", { headers: authHeaders() });
+      const r = await fetch(BASE + "/api/v1/depots", {
+        headers: authHeaders(),
+      });
       if (!r.ok) throw new Error("depots");
       const rows = await r.json();
       elDepot.innerHTML = "";
@@ -63,7 +66,9 @@
     try {
       const q = query();
       const r = await fetch(
-        "/api/v1/finance-stock" + (q.toString() ? "?" + q.toString() : ""),
+        BASE +
+          "/api/v1/finance-stock" +
+          (q.toString() ? "?" + q.toString() : ""),
         { headers: authHeaders() }
       );
       if (!r.ok) {
@@ -142,7 +147,8 @@
     btnCsv.addEventListener("click", () => {
       const q = withToken(query());
       window.open(
-        "/api/v1/finance-stock/export" +
+        BASE +
+          "/api/v1/finance-stock/export" +
           (q.toString() ? "?" + q.toString() : ""),
         "_blank"
       );
@@ -151,7 +157,8 @@
     btnPdf.addEventListener("click", () => {
       const q = withToken(query());
       window.open(
-        "/api/v1/finance-stock/export-pdf" +
+        BASE +
+          "/api/v1/finance-stock/export-pdf" +
           (q.toString() ? "?" + q.toString() : ""),
         "_blank"
       );

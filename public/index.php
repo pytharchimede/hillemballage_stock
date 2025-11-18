@@ -1804,6 +1804,16 @@ if (str_starts_with($path, '/api/v1')) {
         $paramDepot = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
         $from = trim($_GET['from'] ?? '');
         $to = trim($_GET['to'] ?? '');
+        // S'assurer que la colonne cost_price existe pour la valorisation
+        try {
+            $col = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="products" AND COLUMN_NAME="cost_price"');
+            if (!$col) {
+                DB::execute('ALTER TABLE products ADD COLUMN cost_price INT NOT NULL DEFAULT 0 AFTER unit_price');
+                // Initialiser avec le prix de vente si coût inconnu
+                DB::execute('UPDATE products SET cost_price = unit_price WHERE cost_price = 0');
+            }
+        } catch (\Throwable $e) { /* ignore */ }
+        }
         // Scope stock (admin can pick depot, manager fixed to own depot)
         $stockWhere = [];
         $stockParams = [];
@@ -1868,6 +1878,15 @@ if (str_starts_with($path, '/api/v1')) {
         $paramDepot = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
         $from = trim($_GET['from'] ?? '');
         $to = trim($_GET['to'] ?? '');
+        // S'assurer que la colonne cost_price existe
+        try {
+            $col = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="products" AND COLUMN_NAME="cost_price"');
+            if (!$col) {
+                DB::execute('ALTER TABLE products ADD COLUMN cost_price INT NOT NULL DEFAULT 0 AFTER unit_price');
+                DB::execute('UPDATE products SET cost_price = unit_price WHERE cost_price = 0');
+            }
+        } catch (\Throwable $e) { /* ignore */ }
+        }
         $stockWhere = [];
         $stockParams = [];
         if ($role === 'admin') {
@@ -1952,6 +1971,15 @@ if (str_starts_with($path, '/api/v1')) {
         $paramDepot = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
         $from = trim($_GET['from'] ?? '');
         $to = trim($_GET['to'] ?? '');
+        // S'assurer que la colonne cost_price existe
+        try {
+            $col = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="products" AND COLUMN_NAME="cost_price"');
+            if (!$col) {
+                DB::execute('ALTER TABLE products ADD COLUMN cost_price INT NOT NULL DEFAULT 0 AFTER unit_price');
+                DB::execute('UPDATE products SET cost_price = unit_price WHERE cost_price = 0');
+            }
+        } catch (\Throwable $e) { /* ignore */ }
+        }
         $stockWhere = [];
         $stockParams = [];
         if ($role === 'admin') {
