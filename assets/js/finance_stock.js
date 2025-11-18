@@ -12,6 +12,44 @@
     ).trim();
     return t ? { Authorization: "Bearer " + t } : {};
   }
+  async function ensureToken() {
+    let t = (
+      localStorage.getItem("api_token") ||
+      getCookie("api_token") ||
+      ""
+    ).trim();
+    if (t) return t;
+    try {
+      const resp = await fetch(BASE + "/api/v1/auth/session-token", {
+        credentials: "same-origin",
+      });
+      if (!resp.ok) return "";
+      const data = await resp.json();
+      const tok = data && data.token ? String(data.token) : "";
+      if (tok) {
+        localStorage.setItem("api_token", tok);
+        try {
+          document.cookie = "api_token=" + tok + "; path=/";
+        } catch (e) {}
+      }
+      return tok;
+    } catch (e) {
+      return "";
+    }
+  }
+  async function fetchWithAuth(url, opts = {}, canRetry = true) {
+    if (!(localStorage.getItem("api_token") || getCookie("api_token"))) {
+      await ensureToken();
+    }
+    const headers = Object.assign({}, opts.headers || {}, authHeaders());
+    let r = await fetch(url, Object.assign({}, opts, { headers }));
+    if (r.status === 401 && canRetry) {
+      await ensureToken();
+      const headers2 = Object.assign({}, opts.headers || {}, authHeaders());
+      r = await fetch(url, Object.assign({}, opts, { headers: headers2 }));
+    }
+    return r;
+  }
   function fmtFCFA(v) {
     try {
       return new Intl.NumberFormat("fr-FR").format(v || 0) + " FCFA";
@@ -32,9 +70,7 @@
 
   async function loadDepots() {
     try {
-      const r = await fetch(BASE + "/api/v1/depots", {
-        headers: authHeaders(),
-      });
+      const r = await fetchWithAuth(BASE + "/api/v1/depots");
       if (!r.ok) throw new Error("depots");
       const rows = await r.json();
       elDepot.innerHTML = "";
@@ -65,11 +101,10 @@
   async function refresh() {
     try {
       const q = query();
-      const r = await fetch(
+      const r = await fetchWithAuth(
         BASE +
           "/api/v1/finance-stock" +
-          (q.toString() ? "?" + q.toString() : ""),
-        { headers: authHeaders() }
+          (q.toString() ? "?" + q.toString() : "")
       );
       if (!r.ok) {
         elByDepot.textContent = "Erreur";
@@ -122,8 +157,11 @@
     elClients.innerHTML = h;
   }
 
-  if (!elDepot.dataset.loaded) loadDepots();
-  refresh();
+  (async function initPage() {
+    await ensureToken();
+    if (!elDepot.dataset.loaded) await loadDepots();
+    await refresh();
+  })();
 
   if (elApply) elApply.addEventListener("click", refresh);
   if (elReset)
@@ -144,7 +182,8 @@
     return q;
   }
   if (btnCsv)
-    btnCsv.addEventListener("click", () => {
+    btnCsv.addEventListener("click", async () => {
+      await ensureToken();
       const q = withToken(query());
       window.open(
         BASE +
@@ -154,7 +193,8 @@
       );
     });
   if (btnPdf)
-    btnPdf.addEventListener("click", () => {
+    btnPdf.addEventListener("click", async () => {
+      await ensureToken();
       const q = withToken(query());
       window.open(
         BASE +
