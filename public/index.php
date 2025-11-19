@@ -378,6 +378,49 @@ function ensure_seller_rounds_tables(): void
     }
 }
 
+// Helpers tournées vendeur (seller rounds)
+function get_open_round(int $userId, int $depotId): ?array
+{
+    try {
+        $row = DB::query('SELECT * FROM seller_rounds WHERE user_id=:u AND depot_id=:d AND status="open" ORDER BY assigned_at DESC LIMIT 1', [':u' => $userId, ':d' => $depotId])[0] ?? null;
+        return $row ?: null;
+    } catch (\Throwable $e) {
+        return null;
+    }
+}
+
+function get_round_item(int $roundId, int $productId): array
+{
+    try {
+        $row = DB::query('SELECT qty_assigned, qty_returned FROM seller_round_items WHERE round_id=:r AND product_id=:p LIMIT 1', [':r' => $roundId, ':p' => $productId])[0] ?? null;
+        if (!$row) return ['qty_assigned' => 0, 'qty_returned' => 0];
+        return ['qty_assigned' => (int)$row['qty_assigned'], 'qty_returned' => (int)$row['qty_returned']];
+    } catch (\Throwable $e) {
+        return ['qty_assigned' => 0, 'qty_returned' => 0];
+    }
+}
+
+function get_round_sold_qty(array $round, int $productId): int
+{
+    $params = [
+        ':u' => (int)$round['user_id'],
+        ':d' => (int)$round['depot_id'],
+        ':p' => $productId,
+        ':from' => $round['assigned_at']
+    ];
+    $whereTo = '';
+    if (!empty($round['closed_at'])) {
+        $whereTo = ' AND s.sold_at <= :to';
+        $params[':to'] = $round['closed_at'];
+    }
+    try {
+        $row = DB::query('SELECT COALESCE(SUM(si.quantity),0) q FROM sale_items si JOIN sales s ON s.id = si.sale_id WHERE s.user_id=:u AND s.depot_id=:d AND si.product_id=:p AND s.sold_at >= :from' . $whereTo, $params)[0] ?? ['q' => 0];
+        return (int)($row['q'] ?? 0);
+    } catch (\Throwable $e) {
+        return 0;
+    }
+}
+
 function ensure_sale_payments_table(): void
 {
     try {
@@ -888,7 +931,7 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode(['ok' => true]);
         exit;
     }
-    // Create sale with items + optional payment (with strict stock validation)
+    // Create sale with items + optional payment
     if ($path === '/api/v1/sales' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $auth = requireAuth();
         $role = (string)($auth['role'] ?? '');
@@ -900,7 +943,6 @@ if (str_starts_with($path, '/api/v1')) {
             echo json_encode(['error' => 'Items required']);
             exit;
         }
-        // Validate stock availability for each line
         $depotId = (int)$data['depot_id'];
         // Restriction de dépôt pour non-admin
         if ($role !== 'admin') {
@@ -923,15 +965,39 @@ if (str_starts_with($path, '/api/v1')) {
                 echo json_encode(['error' => 'Client invalide']);
                 exit;
             }
-        }
-        foreach ($items as $it) {
-            $pid = (int)$it['product_id'];
-            $qty = (int)$it['quantity'];
-            $available = Stock::available($depotId, $pid);
-            if ($available < $qty) {
-                http_response_code(422);
-                echo json_encode(['error' => 'INSUFFICIENT_STOCK', 'product_id' => $pid, 'requested' => $qty, 'available' => $available]);
+            // Livreur: contrôler contre la tournée ouverte et non contre le stock du dépôt
+            ensure_seller_rounds_tables();
+            $round = get_open_round((int)$auth['id'], $depotId);
+            if (!$round) {
+                http_response_code(409);
+                echo json_encode(['error' => 'Aucune tournée ouverte pour ce livreur (remise requise).']);
                 exit;
+            }
+            foreach ($items as $it) {
+                $pid = (int)$it['product_id'];
+                $qty = (int)$it['quantity'];
+                $ri = get_round_item((int)$round['id'], $pid);
+                $sold = get_round_sold_qty($round, $pid);
+                $assigned = (int)$ri['qty_assigned'];
+                $returned = (int)$ri['qty_returned'];
+                $remaining = max(0, $assigned - $returned - $sold);
+                if ($qty > $remaining) {
+                    http_response_code(422);
+                    echo json_encode(['error' => 'INSUFFICIENT_ROUND_STOCK', 'product_id' => $pid, 'requested' => $qty, 'remaining' => $remaining]);
+                    exit;
+                }
+            }
+        } else {
+            // Admin: Validate stock availability against depot
+            foreach ($items as $it) {
+                $pid = (int)$it['product_id'];
+                $qty = (int)$it['quantity'];
+                $available = Stock::available($depotId, $pid);
+                if ($available < $qty) {
+                    http_response_code(422);
+                    echo json_encode(['error' => 'INSUFFICIENT_STOCK', 'product_id' => $pid, 'requested' => $qty, 'available' => $available]);
+                    exit;
+                }
             }
         }
         $saleModel = new Sale();
@@ -960,8 +1026,11 @@ if (str_starts_with($path, '/api/v1')) {
                 'subtotal' => ((int)$it['unit_price'] * (int)$it['quantity']),
                 'created_at' => date('Y-m-d H:i:s')
             ]);
-            $smModel->move((int)$data['depot_id'], (int)$it['product_id'], 'out', (int)$it['quantity'], date('Y-m-d H:i:s'), $saleId, 'sale');
-            Stock::adjust($depotId, (int)$it['product_id'], 'out', (int)$it['quantity']);
+            // Mouvement/ajustement de stock du dépôt uniquement pour admin (ou si non-livreur)
+            if ($role === 'admin') {
+                $smModel->move((int)$data['depot_id'], (int)$it['product_id'], 'out', (int)$it['quantity'], date('Y-m-d H:i:s'), $saleId, 'sale');
+                Stock::adjust($depotId, (int)$it['product_id'], 'out', (int)$it['quantity']);
+            }
         }
         if (($data['payment_amount'] ?? 0) > 0) {
             $saleModel->addPayment($saleId, (int)$data['payment_amount']);
@@ -1074,6 +1143,129 @@ if (str_starts_with($path, '/api/v1')) {
             $rows = DB::query($sql, $params);
         }
         echo json_encode($rows);
+        exit;
+    }
+    // Seller rounds: open a round (admin/gerant)
+    if ($path === '/api/v1/seller-rounds/open' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $auth = requireAuth();
+        requireRole($auth, ['admin', 'gerant']);
+        ensure_seller_rounds_tables();
+        $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
+        $userId = (int)($data['user_id'] ?? 0);
+        $depotId = (int)($data['depot_id'] ?? 0);
+        if ($userId <= 0 || $depotId <= 0) {
+            http_response_code(422);
+            echo json_encode(['error' => 'user_id et depot_id requis']);
+            exit;
+        }
+        // Gerant ne peut ouvrir que sur son dépôt
+        if (($auth['role'] ?? '') === 'gerant' && (int)($auth['depot_id'] ?? 0) !== $depotId) {
+            http_response_code(403);
+            echo json_encode(['error' => 'Forbidden depot']);
+            exit;
+        }
+        $existing = get_open_round($userId, $depotId);
+        if ($existing) {
+            echo json_encode(['round' => $existing, 'already_open' => true]);
+            exit;
+        }
+        DB::execute('INSERT INTO seller_rounds(depot_id,user_id,status,cash_turned_in,assigned_at) VALUES(:d,:u,\'open\',0,NOW())', [':d' => $depotId, ':u' => $userId]);
+        $rid = (int)DB::query('SELECT LAST_INSERT_ID() id')[0]['id'];
+        echo json_encode(['round' => ['id' => $rid, 'depot_id' => $depotId, 'user_id' => $userId, 'status' => 'open']]);
+        exit;
+    }
+    // Seller rounds: assign products to round (admin/gerant)
+    if (preg_match('#^/api/v1/seller-rounds/(\d+)/assign$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $auth = requireAuth();
+        requireRole($auth, ['admin', 'gerant']);
+        ensure_seller_rounds_tables();
+        $rid = (int)$m[1];
+        $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
+        $pid = (int)($data['product_id'] ?? 0);
+        $qty = (int)($data['quantity'] ?? 0);
+        if ($pid <= 0 || $qty <= 0) {
+            http_response_code(422);
+            echo json_encode(['error' => 'product_id et quantity requis']);
+            exit;
+        }
+        $round = DB::query('SELECT * FROM seller_rounds WHERE id=:id AND status=\'open\' LIMIT 1', [':id' => $rid])[0] ?? null;
+        if (!$round) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Round not found or closed']);
+            exit;
+        }
+        // Gerant limité à son dépôt
+        if (($auth['role'] ?? '') === 'gerant' && (int)($auth['depot_id'] ?? 0) !== (int)$round['depot_id']) {
+            http_response_code(403);
+            echo json_encode(['error' => 'Forbidden depot']);
+            exit;
+        }
+        // Vérifier stock du dépôt
+        $available = Stock::available((int)$round['depot_id'], $pid);
+        if ($available < $qty) {
+            http_response_code(422);
+            echo json_encode(['error' => 'INSUFFICIENT_STOCK', 'available' => $available]);
+            exit;
+        }
+        // Upsert round item
+        $exists = DB::query('SELECT qty_assigned FROM seller_round_items WHERE round_id=:r AND product_id=:p', [':r' => $rid, ':p' => $pid])[0] ?? null;
+        if ($exists) {
+            DB::execute('UPDATE seller_round_items SET qty_assigned = qty_assigned + :q WHERE round_id=:r AND product_id=:p', [':q' => $qty, ':r' => $rid, ':p' => $pid]);
+        } else {
+            DB::execute('INSERT INTO seller_round_items(round_id,product_id,qty_assigned,qty_returned) VALUES(:r,:p,:q,0)', [':r' => $rid, ':p' => $pid, ':q' => $qty]);
+        }
+        // Impacter le stock du dépôt à la remise
+        (new StockMovement())->move((int)$round['depot_id'], $pid, 'out', $qty, date('Y-m-d H:i:s'), null, 'round_assign');
+        Stock::adjust((int)$round['depot_id'], $pid, 'out', $qty);
+        echo json_encode(['assigned' => true]);
+        exit;
+    }
+    // Seller rounds: return quantities (admin/gerant)
+    if (preg_match('#^/api/v1/seller-rounds/(\d+)/return$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
+        $auth = requireAuth();
+        requireRole($auth, ['admin', 'gerant']);
+        ensure_seller_rounds_tables();
+        $rid = (int)$m[1];
+        $data = json_decode(file_get_contents('php://input'), true) ?: [];
+        $items = $data['items'] ?? [];
+        $round = DB::query('SELECT * FROM seller_rounds WHERE id=:id AND status=\'open\' LIMIT 1', [':id' => $rid])[0] ?? null;
+        if (!$round) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Round not found or closed']);
+            exit;
+        }
+        if (($auth['role'] ?? '') === 'gerant' && (int)($auth['depot_id'] ?? 0) !== (int)$round['depot_id']) {
+            http_response_code(403);
+            echo json_encode(['error' => 'Forbidden depot']);
+            exit;
+        }
+        foreach ($items as $it) {
+            $pid = (int)($it['product_id'] ?? 0);
+            $qty = (int)($it['quantity'] ?? 0);
+            if ($pid <= 0 || $qty < 0) continue;
+            $ri = get_round_item($rid, $pid);
+            $assigned = (int)$ri['qty_assigned'];
+            $sold = get_round_sold_qty($round, $pid);
+            $maxReturnable = max(0, $assigned - $sold);
+            if ($qty > $maxReturnable) {
+                http_response_code(422);
+                echo json_encode(['error' => 'RETURN_EXCEEDS_AVAILABLE', 'product_id' => $pid, 'max' => $maxReturnable]);
+                exit;
+            }
+            // Mettre à jour qty_returned au cumul
+            $newReturned = (int)$ri['qty_returned'] + $qty;
+            if ($newReturned > $assigned) $newReturned = $assigned;
+            $exists = DB::query('SELECT 1 FROM seller_round_items WHERE round_id=:r AND product_id=:p', [':r' => $rid, ':p' => $pid]);
+            if ($exists) {
+                DB::execute('UPDATE seller_round_items SET qty_returned=:qr WHERE round_id=:r AND product_id=:p', [':qr' => $newReturned, ':r' => $rid, ':p' => $pid]);
+            } else {
+                DB::execute('INSERT INTO seller_round_items(round_id,product_id,qty_assigned,qty_returned) VALUES(:r,:p,0,:qr)', [':r' => $rid, ':p' => $pid, ':qr' => $newReturned]);
+            }
+            // Retour au dépôt
+            (new StockMovement())->move((int)$round['depot_id'], $pid, 'return', $qty, date('Y-m-d H:i:s'), null, 'round_return');
+            Stock::adjust((int)$round['depot_id'], $pid, 'in', $qty);
+        }
+        echo json_encode(['returned' => true]);
         exit;
     }
     // Products export (CSV/PDF) with same scoping and filters
@@ -2803,7 +2995,7 @@ if (str_starts_with($path, '/api/v1')) {
         $auth = requireAuth();
         ensure_seller_rounds_tables();
         $rid = (int)$m[1];
-        $round = DB::query('SELECT id,depot_id,user_id,status FROM seller_rounds WHERE id=:id LIMIT 1', [':id' => $rid])[0] ?? null;
+        $round = DB::query('SELECT id,depot_id,user_id,status,assigned_at,closed_at FROM seller_rounds WHERE id=:id LIMIT 1', [':id' => $rid])[0] ?? null;
         if (!$round) {
             http_response_code(404);
             echo json_encode(['error' => 'Not found']);
@@ -2848,6 +3040,31 @@ if (str_starts_with($path, '/api/v1')) {
             if ($apply !== $req) {
                 $appliedMeta[] = ['product_id' => $pid, 'requested' => $req, 'applied' => $apply, 'allowed' => $allowed];
             }
+        }
+        // After applying provided returns, enforce alignment: for each item, assigned - sold = returned
+        $items = DB::query('SELECT product_id, qty_assigned, qty_returned FROM seller_round_items WHERE round_id=:r', [':r' => $rid]);
+        $mismatches = [];
+        foreach ($items as $ri) {
+            $pid = (int)$ri['product_id'];
+            $assigned = (int)$ri['qty_assigned'];
+            $returnedNow = (int)$ri['qty_returned'];
+            // Compute sold during the round window
+            $soldQty = get_round_sold_qty($round, $pid);
+            $expectedReturned = max(0, $assigned - $soldQty);
+            if ($returnedNow !== $expectedReturned) {
+                $mismatches[] = [
+                    'product_id' => $pid,
+                    'assigned' => $assigned,
+                    'sold' => $soldQty,
+                    'returned' => $returnedNow,
+                    'expected_returned' => $expectedReturned
+                ];
+            }
+        }
+        if (!empty($mismatches)) {
+            http_response_code(422);
+            echo json_encode(['error' => 'ROUND_NOT_BALANCED', 'details' => $mismatches, 'hint' => 'Ajustez les retours pour que Assigné - Vendu = Retourné.']);
+            exit;
         }
         DB::execute('UPDATE seller_rounds SET status="closed", cash_turned_in=:c, notes=:n, closed_at=NOW() WHERE id=:id', [':c' => $cash, ':n' => $notes, ':id' => $rid]);
         try {
