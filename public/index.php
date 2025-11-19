@@ -197,6 +197,18 @@ function ensure_clients_depot_column(): void
     }
 }
 
+// Assurer la colonne credit_limit sur clients (plafond de crédit)
+function ensure_clients_credit_limit_column(): void
+{
+    try {
+        $col = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="clients" AND COLUMN_NAME="credit_limit"');
+        if (!$col) {
+            DB::execute('ALTER TABLE clients ADD COLUMN credit_limit INT NOT NULL DEFAULT 0 AFTER longitude');
+        }
+    } catch (\Throwable $e) { /* ignore */
+    }
+}
+
 function loadExplicitPermissions(int $uid): array
 {
     try {
@@ -523,6 +535,8 @@ if (str_starts_with($path, '/api/v1')) {
         $u = requireAuth();
         requireRole($u, ['admin']);
         ensure_clients_depot_column();
+        ensure_clients_credit_limit_column();
+        ensure_clients_credit_limit_column();
         $payload = json_decode(file_get_contents('php://input'), true) ?: $_POST ?: [];
         $targetDepotId = isset($payload['depot_id']) ? (int)$payload['depot_id'] : 0;
         if ($targetDepotId <= 0) {
@@ -763,7 +777,7 @@ if (str_starts_with($path, '/api/v1')) {
             $where[] = 'c.depot_id = :dep';
             $params[':dep'] = $userDepotId;
         }
-        $sql = 'SELECT c.id,c.name,c.phone,c.address,c.latitude,c.longitude,c.photo_path,c.created_at, c.depot_id,
+        $sql = 'SELECT c.id,c.name,c.phone,c.address,c.latitude,c.longitude,c.photo_path,c.created_at, c.depot_id, c.credit_limit,
             (SELECT COALESCE(SUM(s.total_amount) - SUM(s.amount_paid), 0) FROM sales s WHERE s.client_id = c.id) AS balance
             FROM clients c';
         if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
@@ -777,6 +791,7 @@ if (str_starts_with($path, '/api/v1')) {
         $auth = requireAuth();
         requirePermission($auth, 'clients', 'edit');
         ensure_clients_depot_column();
+        ensure_clients_credit_limit_column();
         $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
         $data = [];
         if (stripos($contentType, 'application/json') !== false) {
@@ -806,6 +821,7 @@ if (str_starts_with($path, '/api/v1')) {
             'depot_id' => $targetDepotId,
             'latitude' => isset($data['latitude']) ? $data['latitude'] : null,
             'longitude' => isset($data['longitude']) ? $data['longitude'] : null,
+            'credit_limit' => isset($data['credit_limit']) && ($role === 'admin' || $role === 'gerant') ? (int)$data['credit_limit'] : 0,
             'photo_path' => $photo,
             'created_at' => date('Y-m-d H:i:s')
         ]);
@@ -817,6 +833,7 @@ if (str_starts_with($path, '/api/v1')) {
         $auth = requireAuth();
         requirePermission($auth, 'clients', 'edit');
         ensure_clients_depot_column();
+        ensure_clients_credit_limit_column();
         $id = (int)$m[1];
         $role = (string)($auth['role'] ?? '');
         $userDepotId = (int)($auth['depot_id'] ?? 0);
@@ -832,13 +849,24 @@ if (str_starts_with($path, '/api/v1')) {
         $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
         if (stripos($contentType, 'application/json') !== false) {
             $data = json_decode(file_get_contents('php://input'), true) ?: [];
-            DB::execute('UPDATE clients SET name=:n, phone=:p, address=:a, updated_at=NOW() WHERE id=:id', [':n' => $data['name'] ?? 'Client', ':p' => $data['phone'] ?? null, ':a' => $data['address'] ?? null, ':id' => $id]);
+            $fields = 'name=:n, phone=:p, address=:a';
+            $params = [':n' => $data['name'] ?? 'Client', ':p' => $data['phone'] ?? null, ':a' => $data['address'] ?? null, ':id' => $id];
+            // Autoriser maj credit_limit pour admin/gerant
+            if (in_array(($auth['role'] ?? ''), ['admin', 'gerant'], true) && isset($data['credit_limit'])) {
+                $fields .= ', credit_limit=:cl';
+                $params[':cl'] = (int)$data['credit_limit'];
+            }
+            DB::execute('UPDATE clients SET ' . $fields . ', updated_at=NOW() WHERE id=:id', $params);
             echo json_encode(['updated' => true]);
         } else {
             $data = $_POST;
             $photo = save_upload('photo');
             $params = [':n' => $data['name'] ?? 'Client', ':p' => $data['phone'] ?? null, ':a' => $data['address'] ?? null, ':id' => $id];
             $sql = 'UPDATE clients SET name=:n, phone=:p, address=:a';
+            if (in_array(($auth['role'] ?? ''), ['admin', 'gerant'], true) && isset($data['credit_limit'])) {
+                $sql .= ', credit_limit=:cl';
+                $params[':cl'] = (int)$data['credit_limit'];
+            }
             if ($photo) {
                 $sql .= ', photo_path=:ph';
                 $params[':ph'] = $photo;
@@ -849,16 +877,17 @@ if (str_starts_with($path, '/api/v1')) {
         }
         exit;
     }
-    // Get single client (with balance) - scoped by depot for non-admin
+    // Get single client (with balance & credit_limit) - scoped by depot for non-admin
     if (preg_match('#^/api/v1/clients/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $u = requireAuth();
         requirePermission($u, 'clients', 'view');
         ensure_clients_depot_column();
+        ensure_clients_credit_limit_column();
         $role = (string)($u['role'] ?? '');
         $userDepotId = (int)($u['depot_id'] ?? 0);
         $id = (int)$m[1];
-        $row = DB::query('SELECT c.id,c.name,c.phone,c.address,c.latitude,c.longitude,c.photo_path,c.created_at,c.depot_id,
-                (SELECT COALESCE(SUM(s.total_amount) - SUM(s.amount_paid), 0) FROM sales s WHERE s.client_id = c.id) AS balance
+        $row = DB::query('SELECT c.id,c.name,c.phone,c.address,c.latitude,c.longitude,c.photo_path,c.created_at,c.depot_id,c.credit_limit,
+            (SELECT COALESCE(SUM(s.total_amount) - SUM(s.amount_paid), 0) FROM sales s WHERE s.client_id = c.id) AS balance
             FROM clients c WHERE c.id = :id LIMIT 1', [':id' => $id])[0] ?? null;
         if (!$row) {
             http_response_code(404);
@@ -943,6 +972,22 @@ if (str_starts_with($path, '/api/v1')) {
             echo json_encode(['error' => 'Items required']);
             exit;
         }
+        // Basic validation des lignes
+        foreach ($items as $it) {
+            $pid = (int)($it['product_id'] ?? 0);
+            $qty = (int)($it['quantity'] ?? 0);
+            $price = (int)($it['unit_price'] ?? 0);
+            if ($pid <= 0 || $qty <= 0) {
+                http_response_code(422);
+                echo json_encode(['error' => 'INVALID_ITEM', 'details' => ['product_id' => $pid, 'quantity' => $qty]]);
+                exit;
+            }
+            if ($price < 0) {
+                http_response_code(422);
+                echo json_encode(['error' => 'INVALID_PRICE', 'details' => ['product_id' => $pid]]);
+                exit;
+            }
+        }
         $depotId = (int)$data['depot_id'];
         // Restriction de dépôt pour non-admin
         if ($role !== 'admin') {
@@ -964,6 +1009,28 @@ if (str_starts_with($path, '/api/v1')) {
                 http_response_code(422);
                 echo json_encode(['error' => 'Client invalide']);
                 exit;
+            }
+            // Vérifier plafond de crédit client (balance actuelle + restant de la vente)
+            try {
+                $cid = (int)($data['client_id'] ?? 0);
+                $cli2 = DB::query('SELECT credit_limit FROM clients WHERE id=:id', [':id' => $cid])[0] ?? null;
+                if ($cid > 0 && $cli2) {
+                    $rowBal = DB::query('SELECT COALESCE(SUM(total_amount) - SUM(amount_paid),0) b FROM sales WHERE client_id=:c', [':c' => $cid])[0] ?? ['b' => 0];
+                    $currentBal = (int)($rowBal['b'] ?? 0);
+                    $paymentInit = (int)($data['payment_amount'] ?? 0);
+                    $totalTmp = 0;
+                    foreach ($items as $it) {
+                        $totalTmp += (int)$it['unit_price'] * (int)$it['quantity'];
+                    }
+                    $newBal = $currentBal + max(0, $totalTmp - $paymentInit);
+                    $limit = (int)$cli2['credit_limit'];
+                    if ($limit > 0 && $newBal > $limit) {
+                        http_response_code(422);
+                        echo json_encode(['error' => 'CREDIT_LIMIT_EXCEEDED', 'current' => $currentBal, 'sale_net' => max(0, $totalTmp - $paymentInit), 'limit' => $limit, 'new_balance' => $newBal]);
+                        exit;
+                    }
+                }
+            } catch (\Throwable $e) { /* ignore check errors */
             }
             // Livreur: contrôler contre la tournée ouverte et non contre le stock du dépôt
             ensure_seller_rounds_tables();
@@ -1035,6 +1102,16 @@ if (str_starts_with($path, '/api/v1')) {
         if (($data['payment_amount'] ?? 0) > 0) {
             $saleModel->addPayment($saleId, (int)$data['payment_amount']);
         }
+        // Mettre à jour le statut payé/dû selon les montants
+        $sale = $saleModel->find($saleId);
+        if ($sale) {
+            $newStatus = ((int)$sale['amount_paid'] >= (int)$sale['total_amount']) ? 'paid' : 'due';
+            if (($sale['status'] ?? '') !== $newStatus) {
+                DB::execute('UPDATE sales SET status=:st, updated_at=NOW() WHERE id=:id', [':st' => $newStatus, ':id' => $saleId]);
+                $sale = $saleModel->find($saleId);
+            }
+        }
+
         $sale = $saleModel->find($saleId);
         echo json_encode(['sale' => $sale]);
         exit;
@@ -1048,6 +1125,115 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode(['client_id' => $cid, 'total' => (int)$row['total'], 'paid' => (int)$row['paid'], 'balance' => $balance]);
         exit;
     }
+    // Client ledger endpoint (debets = ventes, crédits = paiements)
+    if (preg_match('#^/api/v1/clients/(\d+)/ledger$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $auth = requireAuth();
+        $cid = (int)$m[1];
+        // Scope depot for non-admin
+        $role = (string)($auth['role'] ?? '');
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
+        $cli = DB::query('SELECT id,depot_id FROM clients WHERE id=:id', [':id' => $cid])[0] ?? null;
+        if (!$cli) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Not found']);
+            exit;
+        }
+        if ($role !== 'admin') {
+            if ($userDepotId <= 0 || (int)$cli['depot_id'] !== $userDepotId) {
+                http_response_code(403);
+                echo json_encode(['error' => 'Forbidden']);
+                exit;
+            }
+        }
+        // Build ledger entries (union sales & payments)
+        $entries = DB::query(
+            'SELECT t.* FROM (
+                SELECT s.id AS ref_id, "sale" AS type, s.sold_at AS dt, s.total_amount AS debit, 0 AS credit, s.user_id, s.depot_id
+                FROM sales s WHERE s.client_id = :c
+                UNION ALL
+                SELECT sp.id AS ref_id, "payment" AS type, sp.paid_at AS dt, 0 AS debit, sp.amount AS credit, sp.user_id, NULL AS depot_id
+                FROM sale_payments sp JOIN sales s2 ON s2.id=sp.sale_id WHERE s2.client_id = :c
+            ) t ORDER BY t.dt ASC, t.ref_id ASC',
+            [':c' => $cid]
+        );
+        // Compute running balance
+        $balance = 0;
+        foreach ($entries as &$e) {
+            $balance += ((int)$e['debit'] - (int)$e['credit']);
+            $e['balance'] = $balance;
+        }
+        $totals = DB::query('SELECT COALESCE(SUM(total_amount),0) total, COALESCE(SUM(amount_paid),0) paid FROM sales WHERE client_id = :c', [':c' => $cid])[0] ?? ['total' => 0, 'paid' => 0];
+        echo json_encode(['client_id' => $cid, 'entries' => $entries, 'total' => (int)$totals['total'], 'paid' => (int)$totals['paid'], 'balance' => (int)$totals['total'] - (int)$totals['paid']]);
+        exit;
+    }
+    // Client ledger export (CSV/PDF)
+    if (preg_match('#^/api/v1/clients/(\d+)/ledger/export$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $auth = requireAuth();
+        requirePermission($auth, 'clients', 'view');
+        $cid = (int)$m[1];
+        // Scope depot for non-admin
+        $role = (string)($auth['role'] ?? '');
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
+        $cli = DB::query('SELECT id,name,depot_id FROM clients WHERE id=:id', [':id' => $cid])[0] ?? null;
+        if (!$cli) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Not found']);
+            exit;
+        }
+        if ($role !== 'admin') {
+            if ($userDepotId <= 0 || (int)$cli['depot_id'] !== $userDepotId) {
+                http_response_code(403);
+                echo json_encode(['error' => 'Forbidden']);
+                exit;
+            }
+        }
+        $format = strtolower(trim($_GET['format'] ?? 'csv')) === 'pdf' ? 'pdf' : 'csv';
+        $entries = DB::query(
+            'SELECT t.* FROM (
+                SELECT s.id AS ref_id, "sale" AS type, s.sold_at AS dt, s.total_amount AS debit, 0 AS credit, s.user_id, s.depot_id
+                FROM sales s WHERE s.client_id = :c
+                UNION ALL
+                SELECT sp.id AS ref_id, "payment" AS type, sp.paid_at AS dt, 0 AS debit, sp.amount AS credit, sp.user_id, NULL AS depot_id
+                FROM sale_payments sp JOIN sales s2 ON s2.id=sp.sale_id WHERE s2.client_id = :c
+            ) t ORDER BY t.dt ASC, t.ref_id ASC',
+            [':c' => $cid]
+        );
+        $balance = 0;
+        foreach ($entries as &$e) {
+            $balance += ((int)$e['debit'] - (int)$e['credit']);
+            $e['balance'] = $balance;
+        }
+        if ($format === 'csv') {
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="client_ledger_' + $cid + '.csv"');
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['Client', (string)$cli['name']]);
+            fputcsv($out, ['Type', 'Date', 'Débit', 'Crédit', 'Solde']);
+            foreach ($entries as $e) fputcsv($out, [$e['type'], (string)$e['dt'], (int)$e['debit'], (int)$e['credit'], (int)$e['balance']]);
+            fclose($out);
+            exit;
+        } else {
+            $pdf = new \TCPDF('P', 'mm', 'A4');
+            $pdf->SetCreator('Hill Stock');
+            $pdf->SetAuthor('Hill Stock');
+            $pdf->SetTitle('Relevé client');
+            $pdf->AddPage();
+            $html = '<h2 style="font-size:16px;margin:0 0 6px">Relevé client</h2>';
+            $html .= '<div style="font-size:10px;color:#666">Client: ' . htmlspecialchars((string)$cli['name']) . ' — Généré le ' . htmlspecialchars(date('Y-m-d H:i')) . '</div><br />';
+            $html .= '<table border="1" cellpadding="4" cellspacing="0"><thead><tr style="background:#f2f2f2;font-weight:bold">'
+                . '<th width="20%">Type</th><th width="30%">Date</th><th width="16%">Débit</th><th width="16%">Crédit</th><th width="18%">Solde</th></tr></thead><tbody>';
+            foreach ($entries as $e) {
+                $html .= '<tr><td>' . htmlspecialchars((string)$e['type']) . '</td><td>' . htmlspecialchars((string)$e['dt']) . '</td>'
+                    . '<td align="right">' . htmlspecialchars(format_fcfa((int)$e['debit'])) . '</td>'
+                    . '<td align="right">' . htmlspecialchars(format_fcfa((int)$e['credit'])) . '</td>'
+                    . '<td align="right">' . htmlspecialchars(format_fcfa((int)$e['balance'])) . '</td></tr>';
+            }
+            $html .= '</tbody></table>';
+            $pdf->writeHTML($html, true, false, true, false, '');
+            $pdf->Output('client_ledger.pdf', 'I');
+            exit;
+        }
+    }
     // Sales listing (scoped by role)
     if ($path === '/api/v1/sales' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $auth = requireAuth();
@@ -1059,6 +1245,13 @@ if (str_starts_with($path, '/api/v1')) {
         if (!empty($_GET['client_id'])) {
             $w[] = 'client_id = :client';
             $p[':client'] = (int)$_GET['client_id'];
+        }
+        if (!empty($_GET['status'])) {
+            $st = $_GET['status'];
+            if (in_array($st, ['paid', 'due', 'pending'], true)) {
+                $w[] = 'status = :st';
+                $p[':st'] = $st;
+            }
         }
         // Scope by role
         if ($role === 'admin') {
@@ -1095,6 +1288,160 @@ if (str_starts_with($path, '/api/v1')) {
         $sql .= ' ORDER BY sold_at DESC LIMIT 500';
         echo json_encode(DB::query($sql, $p));
         exit;
+    }
+    // Receivables listing (sales with outstanding balance) with scoping
+    if ($path === '/api/v1/receivables' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $auth = requireAuth();
+        $role = (string)($auth['role'] ?? '');
+        $uid = (int)($auth['id'] ?? 0);
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
+        $w = ['(total_amount - amount_paid) > 0'];
+        $p = [];
+        if (!empty($_GET['client_id'])) {
+            $w[] = 'client_id = :client';
+            $p[':client'] = (int)$_GET['client_id'];
+        }
+        if (!empty($_GET['from'])) {
+            $w[] = 'sold_at >= :from';
+            $p[':from'] = $_GET['from'] . ' 00:00:00';
+        }
+        if (!empty($_GET['to'])) {
+            $w[] = 'sold_at <= :to';
+            $p[':to'] = $_GET['to'] . ' 23:59:59';
+        }
+        if ($role === 'admin') {
+            if (!empty($_GET['user_id'])) {
+                $w[] = 'user_id = :user';
+                $p[':user'] = (int)$_GET['user_id'];
+            }
+            if (!empty($_GET['depot_id'])) {
+                $w[] = 'depot_id = :dep';
+                $p[':dep'] = (int)$_GET['depot_id'];
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $w[] = 'depot_id = :dep';
+            $p[':dep'] = $userDepotId;
+            if (!empty($_GET['user_id'])) {
+                $w[] = 'user_id = :user';
+                $p[':user'] = (int)$_GET['user_id'];
+            }
+        } else {
+            $w[] = 'user_id = :me';
+            $p[':me'] = $uid;
+        }
+        $sql = 'SELECT id, client_id, user_id, depot_id, total_amount, amount_paid, (total_amount - amount_paid) AS balance, status, sold_at FROM sales';
+        if ($w) $sql .= ' WHERE ' . implode(' AND ', $w);
+        $sql .= ' ORDER BY sold_at DESC LIMIT 500';
+        echo json_encode(DB::query($sql, $p));
+        exit;
+    }
+    // Receivables export (CSV/PDF), aggregated by client in scope
+    if ($path === '/api/v1/receivables/export' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $auth = requireAuth();
+        // Permission: voir les ventes suffit
+        requirePermission($auth, 'sales', 'view');
+        $role = (string)($auth['role'] ?? '');
+        $uid = (int)($auth['id'] ?? 0);
+        $userDepotId = (int)($auth['depot_id'] ?? 0);
+        $depotId = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
+        $userId = isset($_GET['user_id']) && $_GET['user_id'] !== '' ? (int)$_GET['user_id'] : null;
+        $from = trim($_GET['from'] ?? '');
+        $to = trim($_GET['to'] ?? '');
+        $format = strtolower(trim($_GET['format'] ?? 'csv')) === 'pdf' ? 'pdf' : 'csv';
+        // Scope with WHERE; HAVING only for aggregate balance
+        $where = [];
+        $p = [];
+        if ($from !== '') {
+            $where[] = 's.sold_at >= :from';
+            $p[':from'] = $from . ' 00:00:00';
+        }
+        if ($to !== '') {
+            $where[] = 's.sold_at <= :to';
+            $p[':to'] = $to . ' 23:59:59';
+        }
+        if ($role === 'admin') {
+            if ($depotId !== null) {
+                $where[] = 'c.depot_id = :dep';
+                $p[':dep'] = $depotId;
+            }
+            if ($userId !== null) {
+                $where[] = 's.user_id = :user';
+                $p[':user'] = $userId;
+            }
+        } elseif ($role === 'gerant' && $userDepotId > 0) {
+            $where[] = 'c.depot_id = :dep';
+            $p[':dep'] = $userDepotId;
+            if ($userId !== null) {
+                $where[] = 's.user_id = :user';
+                $p[':user'] = $userId;
+            }
+        } else {
+            $where[] = 's.user_id = :me';
+            $p[':me'] = $uid;
+        }
+        $sql = 'SELECT c.id AS client_id, c.name AS client_name, c.phone, c.address, c.latitude, c.longitude, c.depot_id, (SUM(s.total_amount) - SUM(s.amount_paid)) AS balance, SUM(s.total_amount) AS total, SUM(s.amount_paid) AS paid, MAX(s.sold_at) AS last_sale
+            FROM sales s JOIN clients c ON c.id = s.client_id';
+        if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
+        $sql .= ' GROUP BY c.id,c.name,c.phone,c.address,c.latitude,c.longitude,c.depot_id HAVING (SUM(s.total_amount) - SUM(s.amount_paid)) > 0';
+        $rows = DB::query($sql, $p);
+        // Attach depot/user labels if needed
+        $depotNames = [];
+        try {
+            $deps = DB::query('SELECT id,name FROM depots');
+            foreach ($deps as $d) $depotNames[(int)$d['id']] = $d['name'];
+        } catch (\Throwable $e) {
+        }
+        if ($format === 'csv') {
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="receivables.csv"');
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['Client', 'Téléphone', 'Adresse', 'Dépôt', 'Total', 'Payé', 'Solde', 'Dernière vente', 'Latitude', 'Longitude']);
+            foreach ($rows as $r) {
+                fputcsv($out, [
+                    (string)$r['client_name'],
+                    (string)($r['phone'] ?? ''),
+                    (string)($r['address'] ?? ''),
+                    $depotNames[(int)$r['depot_id']] ?? (string)$r['depot_id'],
+                    format_fcfa((int)$r['total']),
+                    format_fcfa((int)$r['paid']),
+                    format_fcfa((int)$r['balance']),
+                    (string)$r['last_sale'],
+                    (string)($r['latitude'] ?? ''),
+                    (string)($r['longitude'] ?? '')
+                ]);
+            }
+            fclose($out);
+            exit;
+        } else {
+            $pdf = new \TCPDF('L', 'mm', 'A4');
+            $pdf->SetCreator('Hill Stock');
+            $pdf->SetAuthor('Hill Stock');
+            $pdf->SetTitle('Créances');
+            $pdf->AddPage();
+            $html = '<h2 style="font-size:16px;margin:0 0 6px">Créances (par client)</h2>';
+            $html .= '<div style="font-size:10px;color:#666">Généré le ' . htmlspecialchars(date('Y-m-d H:i')) . '</div>';
+            $html .= '<br />';
+            $html .= '<table border="1" cellpadding="4" cellspacing="0"><thead><tr style="background:#f2f2f2;font-weight:bold">'
+                . '<th width="40%">Client</th>'
+                . '<th width="20%">Dépôt</th>'
+                . '<th width="13%">Total</th>'
+                . '<th width="13%">Payé</th>'
+                . '<th width="14%">Solde</th>'
+                . '</tr></thead><tbody>';
+            foreach ($rows as $r) {
+                $html .= '<tr>'
+                    . '<td>' . htmlspecialchars((string)$r['client_name']) . '</td>'
+                    . '<td>' . htmlspecialchars($depotNames[(int)$r['depot_id']] ?? (string)$r['depot_id']) . '</td>'
+                    . '<td align="right">' . htmlspecialchars(format_fcfa((int)$r['total'])) . '</td>'
+                    . '<td align="right">' . htmlspecialchars(format_fcfa((int)$r['paid'])) . '</td>'
+                    . '<td align="right">' . htmlspecialchars(format_fcfa((int)$r['balance'])) . '</td>'
+                    . '</tr>';
+            }
+            $html .= '</tbody></table>';
+            $pdf->writeHTML($html, true, false, true, false, '');
+            $pdf->Output('receivables.pdf', 'I');
+            exit;
+        }
     }
     // Products listing (optional q search, optional depot-specific stock)
     if ($path === '/api/v1/products' && $_SERVER['REQUEST_METHOD'] === 'GET') {
@@ -3066,6 +3413,37 @@ if (str_starts_with($path, '/api/v1')) {
             echo json_encode(['error' => 'ROUND_NOT_BALANCED', 'details' => $mismatches, 'hint' => 'Ajustez les retours pour que Assigné - Vendu = Retourné.']);
             exit;
         }
+        // Financial consistency checks in round window
+        $paramsWin = [
+            ':u' => (int)$round['user_id'],
+            ':d' => (int)$round['depot_id'],
+            ':from' => $round['assigned_at'],
+        ];
+        $whereTo = '';
+        if (!empty($round['closed_at'])) {
+            $whereTo = ' AND s.sold_at <= :to';
+            $paramsWin[':to'] = $round['closed_at'];
+        }
+        // Sum amount by items vs sales
+        $sumItems = DB::query('SELECT COALESCE(SUM(si.quantity * si.unit_price),0) v FROM sale_items si JOIN sales s ON s.id=si.sale_id WHERE s.user_id=:u AND s.depot_id=:d AND s.sold_at >= :from' . $whereTo, $paramsWin)[0]['v'] ?? 0;
+        $sumSales = DB::query('SELECT COALESCE(SUM(s.total_amount),0) v FROM sales s WHERE s.user_id=:u AND s.depot_id=:d AND s.sold_at >= :from' . $whereTo, $paramsWin)[0]['v'] ?? 0;
+        if ((int)$sumItems !== (int)$sumSales) {
+            http_response_code(422);
+            echo json_encode(['error' => 'AMOUNTS_MISMATCH', 'details' => ['by_items' => (int)$sumItems, 'by_sales' => (int)$sumSales]]);
+            exit;
+        }
+        // Payments sum vs cash turned in (if provided)
+        $sumPayments = DB::query('SELECT COALESCE(SUM(sp.amount),0) v FROM sale_payments sp JOIN sales s ON s.id=sp.sale_id WHERE s.user_id=:u AND s.depot_id=:d AND s.sold_at >= :from' . $whereTo, $paramsWin)[0]['v'] ?? 0;
+        if ($cash < 0) {
+            http_response_code(422);
+            echo json_encode(['error' => 'INVALID_CASH']);
+            exit;
+        }
+        if ((int)$cash !== (int)$sumPayments) {
+            http_response_code(422);
+            echo json_encode(['error' => 'CASH_MISMATCH', 'details' => ['cash_turned_in' => (int)$cash, 'expected' => (int)$sumPayments]]);
+            exit;
+        }
         DB::execute('UPDATE seller_rounds SET status="closed", cash_turned_in=:c, notes=:n, closed_at=NOW() WHERE id=:id', [':c' => $cash, ':n' => $notes, ':id' => $rid]);
         try {
             audit_log((int)$auth['id'], 'modify', 'seller_rounds', $rid, $path, 'PATCH', ['cash' => $cash, 'returns' => $appliedMeta]);
@@ -3143,8 +3521,8 @@ if (str_starts_with($path, '/api/v1')) {
             exit;
         }
         DB::execute('INSERT INTO sale_payments(sale_id,amount,method,user_id,paid_at) VALUES(:s,:a,:m,:u,NOW())', [':s' => $sid, ':a' => $amount, ':m' => $method, ':u' => (int)$auth['id']]);
-        // Update sale aggregate
-        DB::execute('UPDATE sales SET amount_paid = amount_paid + :a, updated_at=NOW() WHERE id=:id', [':a' => $amount, ':id' => $sid]);
+        // Update sale aggregate + status
+        DB::execute('UPDATE sales SET amount_paid = amount_paid + :a, status = CASE WHEN amount_paid + :a >= total_amount THEN "paid" ELSE "due" END, updated_at=NOW() WHERE id=:id', [':a' => $amount, ':id' => $sid]);
         try {
             audit_log((int)$auth['id'], 'add', 'sale_payments', $sid, $path, 'POST', ['amount' => $amount]);
         } catch (\Throwable $e) {

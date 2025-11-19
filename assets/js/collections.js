@@ -15,6 +15,16 @@
   const elClient = document.getElementById("rc-client");
   const elLoad = document.getElementById("rc-load");
   const elSales = document.getElementById("rc-sales");
+  const elDepot = document.getElementById("rc-depot");
+  const elUser = document.getElementById("rc-user");
+  const elFrom = document.getElementById("rc-from");
+  const elTo = document.getElementById("rc-to");
+  const elExpCsv = document.getElementById("rc-export-csv");
+  const elExpPdf = document.getElementById("rc-export-pdf");
+  const elScopeHint = document.getElementById("rc-scope-hint");
+  const elClientInfo = document.getElementById("rc-client-info");
+  const elLedgerCsv = document.getElementById("rc-ledger-csv");
+  const elLedgerPdf = document.getElementById("rc-ledger-pdf");
 
   async function loadClients() {
     try {
@@ -25,7 +35,11 @@
       rows.forEach((c) => {
         const o = document.createElement("option");
         o.value = c.id;
-        o.textContent = `${c.name} (#${c.id}) — solde ${c.balance || 0}`;
+        const bl = c.balance || 0;
+        const lim = c.credit_limit || 0;
+        const left =
+          lim > 0 ? ` | plafond ${lim}, reste ${Math.max(0, lim - bl)}` : "";
+        o.textContent = `${c.name} (#${c.id}) — solde ${bl}${left}`;
         elClient.appendChild(o);
       });
     } catch (_) {
@@ -33,8 +47,65 @@
     }
   }
 
+  async function loadDepotsAndUsers() {
+    // depots: admin -> tous; sinon -> un seul (API renvoie déjà selon scope)
+    try {
+      const r = await fetch("/api/v1/depots", { headers: authHeaders() });
+      const rows = r.ok ? await r.json() : [];
+      if (elDepot) {
+        elDepot.innerHTML = '<option value="">(tous dépôts)</option>';
+        rows.forEach((d) => {
+          const o = document.createElement("option");
+          o.value = d.id;
+          o.textContent = `${d.name} (#${d.id})`;
+          elDepot.appendChild(o);
+        });
+      }
+    } catch {}
+    await loadUsers();
+  }
+
+  async function loadUsers() {
+    if (!elUser) return;
+    const dep = (elDepot && elDepot.value) || "";
+    try {
+      const r = await fetch(
+        `/api/v1/users/brief?role=livreur${dep ? `&depot_id=${dep}` : ""}`,
+        { headers: authHeaders() }
+      );
+      const rows = r.ok ? await r.json() : [];
+      elUser.innerHTML = '<option value="">(tous agents)</option>';
+      rows.forEach((u) => {
+        const o = document.createElement("option");
+        o.value = u.id;
+        o.textContent = `${u.name} (#${u.id})`;
+        elUser.appendChild(o);
+      });
+    } catch {}
+  }
+
   async function loadSales(clientId) {
     try {
+      // afficher infos client (solde/plafond)
+      try {
+        const ci = await fetch(`/api/v1/clients/${clientId}`, {
+          headers: authHeaders(),
+        });
+        if (ci.ok) {
+          const c = await ci.json();
+          const bl = c.balance || 0;
+          const lim = c.credit_limit || 0;
+          let txt = `Solde: ${bl}`;
+          if (lim > 0) {
+            const left = lim - bl;
+            txt += ` | Plafond: ${lim} | Reste autorisé: ${left}`;
+            elClientInfo.style.color = left < 0 ? "#c00" : "";
+          } else {
+            elClientInfo.style.color = "";
+          }
+          elClientInfo.textContent = txt;
+        }
+      } catch {}
       const r = await fetch(`/api/v1/sales?client_id=${clientId}`, {
         headers: authHeaders(),
       });
@@ -70,6 +141,41 @@
     }
   }
 
+  function exportReceivables(fmt) {
+    const dep =
+      elDepot && elDepot.value
+        ? `&depot_id=${encodeURIComponent(elDepot.value)}`
+        : "";
+    const usr =
+      elUser && elUser.value
+        ? `&user_id=${encodeURIComponent(elUser.value)}`
+        : "";
+    const f =
+      elFrom && elFrom.value ? `&from=${encodeURIComponent(elFrom.value)}` : "";
+    const t = elTo && elTo.value ? `&to=${encodeURIComponent(elTo.value)}` : "";
+    const token = (
+      localStorage.getItem("api_token") ||
+      getCookie("api_token") ||
+      ""
+    ).trim();
+    const tk = token ? `&api_token=${encodeURIComponent(token)}` : "";
+    const url = `/api/v1/receivables/export?format=${fmt}${dep}${usr}${f}${t}${tk}`;
+    window.open(url, "_blank");
+  }
+
+  function exportLedger(fmt) {
+    const cid = parseInt(elClient && elClient.value, 10);
+    if (!cid) return;
+    const token = (
+      localStorage.getItem("api_token") ||
+      getCookie("api_token") ||
+      ""
+    ).trim();
+    const tk = token ? `&api_token=${encodeURIComponent(token)}` : "";
+    const url = `/api/v1/clients/${cid}/ledger/export?format=${fmt}${tk}`;
+    window.open(url, "_blank");
+  }
+
   async function doPay(e) {
     const id = parseInt(e.currentTarget.getAttribute("data-id"), 10);
     const amt =
@@ -102,5 +208,19 @@
       if (cid) loadSales(cid);
     });
 
+  if (elDepot)
+    elDepot.addEventListener("change", () => {
+      loadUsers();
+    });
+  if (elExpCsv)
+    elExpCsv.addEventListener("click", () => exportReceivables("csv"));
+  if (elExpPdf)
+    elExpPdf.addEventListener("click", () => exportReceivables("pdf"));
+  if (elLedgerCsv)
+    elLedgerCsv.addEventListener("click", () => exportLedger("csv"));
+  if (elLedgerPdf)
+    elLedgerPdf.addEventListener("click", () => exportLedger("pdf"));
+
   loadClients();
+  loadDepotsAndUsers();
 })();
