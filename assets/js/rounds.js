@@ -13,6 +13,11 @@
     return token ? { Authorization: "Bearer " + token } : {};
   }
 
+  function formatAmount(val) {
+    val = Number(val) || 0;
+    return val.toLocaleString("fr-FR") + " FCFA";
+  }
+
   const elDepot = document.getElementById("sr-depot");
   const elSeller = document.getElementById("sr-seller");
   const elProduct = document.getElementById("sr-product");
@@ -250,9 +255,10 @@
     dlg.className = "modal";
     dlg.innerHTML = `<div class="modal-content"><h3>Clôturer tournée #${roundId}</h3>
       <div id="close-items">Chargement items...</div>
+      <div id="close-summary" class="muted" style="margin-top:8px;font-size:12px"></div>
       <div style="margin-top:8px">
-        <label class="muted">Cash remis</label>
-        <input id="close-cash" type="number" min="0" class="form-control" style="width:160px" />
+        <label class="muted">Cash remis (auto)</label>
+        <input id="close-cash" type="number" min="0" class="form-control" style="width:160px" readonly />
       </div>
       <div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end">
         <button id="close-cancel" class="btn btn-ghost">Annuler</button>
@@ -266,46 +272,76 @@
 
     btnCancel.addEventListener("click", () => dlg.remove());
 
-    // Load items from open list cache by refetching just that round
-    fetch(BASE + `/api/v1/seller-rounds?status=open`, {
+    // Charger les stats backend directement
+    fetch(BASE + `/api/v1/seller-rounds/${roundId}/stats`, {
       headers: authHeaders(),
     })
-      .then((r) => r.json())
-      .then((rows) => rows.find((x) => x.id === roundId))
       .then((r) => {
-        if (!r || !Array.isArray(r.items)) {
-          closeItems.textContent = "Items indisponibles";
+        if (!r.ok) {
+          closeItems.textContent = `Erreur stats (HTTP ${r.status})`;
+          console.error("Réponse API non OK :", r);
+          return null;
+        }
+        return r.json();
+      })
+      .then((stats) => {
+        if (!stats || !Array.isArray(stats.items)) {
+          closeItems.textContent = "Stats indisponibles";
+          console.error("Réponse stats API :", stats);
           return;
         }
         let h =
-          '<table class="excel"><thead><tr><th>Article</th><th>Attribué</th><th>Retour</th></tr></thead><tbody>';
-        r.items.forEach((it) => {
-          h += `<tr><td>${it.name || "#" + it.product_id}</td><td>${
-            it.qty_assigned
-          }</td><td><input type="number" min="0" max="${
-            it.qty_assigned
-          }" data-p="${
-            it.product_id
-          }" class="form-control compact" style="width:100px"/></td></tr>`;
+          '<table class="excel"><thead><tr><th>Article</th><th>Attribué</th><th>Vendu</th><th>Retourné (auto)</th><th>Reste</th></tr></thead><tbody>';
+        stats.items.forEach((it) => {
+          const name =
+            typeof it.name !== "undefined" ? it.name : "#" + it.product_id;
+          const assigned = it.qty_assigned || 0;
+          const sold = it.qty_sold || 0;
+          const returned = it.qty_returned || 0;
+          const remaining =
+            typeof it.qty_remaining !== "undefined"
+              ? it.qty_remaining
+              : Math.max(0, assigned - sold - returned);
+          const autoReturn = Math.max(0, assigned - sold);
+          h += `<tr><td>${name}</td><td>${assigned}</td><td>${sold}</td><td>${autoReturn}</td><td>${remaining}</td></tr>`;
         });
         h += "</tbody></table>";
         closeItems.innerHTML = h;
+        const payments = stats.totals?.payments_amount || 0;
+        const salesAmt = stats.totals?.sales_amount || 0;
+        const credit = Math.max(0, salesAmt - payments);
+        const cs = dlg.querySelector("#close-summary");
+        if (cs) {
+          cs.textContent = `Vendu: ${formatAmount(
+            salesAmt
+          )} • Payé: ${formatAmount(payments)} • Crédit: ${formatAmount(
+            credit
+          )}`;
+        }
+        dlg.querySelector("#close-cash").value = String(payments);
+        dlg.dataset.roundStatsItems = JSON.stringify(stats.items);
+        dlg.dataset.roundStatsPayments = String(payments);
       })
-      .catch(() => {
-        closeItems.textContent = "Erreur";
+      .catch((err) => {
+        closeItems.textContent = "Erreur stats (exception JS)";
+        console.error("Erreur JS stats API :", err);
       });
 
     btnSubmit.addEventListener("click", async () => {
-      const returns = [];
-      dlg.querySelectorAll("input[data-p]").forEach((inp) => {
-        const q = parseInt(inp.value, 10) || 0;
-        if (q > 0)
-          returns.push({
-            product_id: parseInt(inp.getAttribute("data-p"), 10),
-            quantity: q,
-          });
-      });
-      const cash = parseInt(dlg.querySelector("#close-cash").value, 10) || 0;
+      // Calcul auto des retours via stats (assigné - vendu)
+      let returns = [];
+      try {
+        const items = JSON.parse(dlg.dataset.roundStatsItems || "[]");
+        returns = items
+          .map((it) => {
+            const assigned = it.qty_assigned || 0;
+            const sold = it.qty_sold || 0;
+            const ret = Math.max(0, assigned - sold);
+            return { product_id: it.product_id, quantity: ret };
+          })
+          .filter((r) => r.quantity > 0);
+      } catch (_) {}
+      const cash = parseInt(dlg.dataset.roundStatsPayments || "0", 10) || 0;
       try {
         const r = await fetch(BASE + `/api/v1/seller-rounds/${roundId}`, {
           method: "PATCH",

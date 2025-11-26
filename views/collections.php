@@ -7,10 +7,13 @@
         <select id="rc-user" class="form-control" style="min-width:200px"></select>
         <input id="rc-from" type="date" class="form-control compact">
         <input id="rc-to" type="date" class="form-control compact">
-        <button id="rc-export-csv" class="btn small">Export CSV</button>
-        <button id="rc-export-pdf" class="btn small">Export PDF</button>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px"><input type="checkbox" id="rc-group-user"> Regrouper par agent</label>
+        <button id="rc-export-csv" class="btn small">Créances CSV</button>
+        <button id="rc-export-pdf" class="btn small">Créances PDF</button>
+        <button id="rc-route-csv" class="btn secondary small">Plan tournée CSV</button>
+        <button id="rc-route-pdf" class="btn secondary small">Plan tournée PDF</button>
     </div>
-    <div class="muted" style="margin-top:6px">Sélectionnez un dépôt et/ou un agent pour exporter la liste des créances (par client) dans votre périmètre.</div>
+    <div class="muted" style="margin-top:6px">Utilisez les filtres. Cochez "Regrouper par agent" pour un PDF multi-sections. Le plan de tournée priorise les clients avec le plus ancien impayé et le plus gros solde.</div>
     <div id="rc-scope-hint" class="muted" style="margin-top:4px"></div>
 </section>
 

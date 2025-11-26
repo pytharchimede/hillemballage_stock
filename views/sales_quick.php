@@ -3,7 +3,8 @@
 <section class="card" style="margin-bottom:12px">
     <h3>Nouvelle vente (mobile-first)</h3>
     <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
-        <div>
+        <!-- Dépôt retiré pour les livreurs: stock issu de la tournée ouverte -->
+        <div style="display:none">
             <label class="muted">Dépôt</label>
             <select id="sq-depot" class="form-control" style="min-width:220px"></select>
         </div>
@@ -25,9 +26,19 @@
                 <div id="sq-hint" class="muted" style="font-size:12px"></div>
             </div>
         </div>
+        <div>
+            <label class="muted">Recouvrement (paiement hors vente)</label>
+            <div style="display:flex;flex-direction:column;gap:6px">
+                <input id="sq-collect" type="number" min="0" class="form-control" style="width:160px" placeholder="Ex: 5000" />
+                <button id="sq-collect-submit" class="btn-ghost" style="margin-top:4px">Enregistrer</button>
+                <div id="sq-collect-hint" class="muted" style="font-size:12px"></div>
+            </div>
+        </div>
         <button id="sq-submit" class="btn">Valider la vente</button>
     </div>
     <div class="muted" style="margin-top:6px">Sélectionnez les produits ci-dessous, ajustez les quantités et validez.</div>
+    <div id="sq-round-info" class="muted" style="margin-top:8px;font-size:12px"></div>
+    <div id="sq-client-stats" class="muted" style="margin-top:6px;font-size:12px"></div>
 </section>
 
 <section class="cards grid-2">

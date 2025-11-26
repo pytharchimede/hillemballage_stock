@@ -23,10 +23,18 @@
   const elPaid = document.getElementById("sq-paid");
   const elCashAll = document.getElementById("sq-cash-all");
   const elHint = document.getElementById("sq-hint");
+  const elRoundInfo = document.getElementById("sq-round-info");
+  const elCollect = document.getElementById("sq-collect");
+  const elCollectSubmit = document.getElementById("sq-collect-submit");
+  const elCollectHint = document.getElementById("sq-collect-hint");
+  const elClientStats = document.getElementById("sq-client-stats");
+
+  let currentRound = null; // {id, depot_id, items: []}
 
   let products = [];
   let cart = [];
   let selectedClient = null; // {id, name, phone}
+  let roundStats = null; // stats backend {items, totals}
 
   function renderSelectedClient() {
     if (!elClientSelected) return;
@@ -41,10 +49,12 @@
       elClientSelected.textContent = label;
       elClientSelected.classList.remove("muted");
       elClientSelected.style.fontWeight = "600";
+      loadClientStats();
     } else {
       elClientSelected.textContent = "Aucun client sélectionné";
       elClientSelected.classList.add("muted");
       elClientSelected.style.fontWeight = "";
+      if (elClientStats) elClientStats.textContent = "";
     }
   }
 
@@ -196,46 +206,98 @@
     );
   }
 
-  async function loadDepots() {
+  // Chargement automatique du stock du livreur (tournée ouverte)
+  async function loadSellerRoundProducts() {
     try {
-      const r = await fetch(BASE + "/api/v1/depots", {
+      // 1. Récupérer l'utilisateur courant
+      const meResp = await fetch(BASE + "/api/v1/auth/me", {
         headers: authHeaders(),
       });
-      const rows = (await r.json()) || [];
-      elDepot.innerHTML = "";
-      const ph = document.createElement("option");
-      ph.value = "";
-      ph.textContent = "— Sélectionner —";
-      elDepot.appendChild(ph);
-      rows.forEach((d) => {
-        const o = document.createElement("option");
-        o.value = d.id;
-        o.textContent = `${d.name}${d.code ? " (" + d.code + ")" : ""}`;
-        elDepot.appendChild(o);
-      });
-    } catch (_) {
-      elDepot.innerHTML = '<option value="">—</option>';
-    }
-  }
-
-  async function loadProducts() {
-    const dep = parseInt(elDepot.value, 10) || 0;
-    if (!dep) {
-      elProducts.innerHTML = '<div class="muted">Choisir un dépôt</div>';
-      return;
-    }
-    try {
-      const r = await fetch(
-        BASE + `/api/v1/products?depot_id=${dep}&only_in_stock=1`,
+      const me = meResp.ok ? await meResp.json() : null;
+      const userId = me?.id;
+      if (!userId) {
+        elProducts.innerHTML =
+          '<div class="muted">Utilisateur non identifié</div>';
+        return;
+      }
+      // 2. Récupérer les tournées ouvertes
+      const roundsResp = await fetch(
+        BASE + "/api/v1/seller-rounds?status=open",
         {
           headers: authHeaders(),
         }
       );
-      products = (await r.json()) || [];
+      const rounds = roundsResp.ok ? await roundsResp.json() : [];
+      // 3. Filtrer la tournée du livreur
+      const myRounds = (rounds || []).filter((r) => r.user_id === userId);
+      if (!myRounds.length) {
+        elProducts.innerHTML =
+          '<div class="muted">Aucune tournée ouverte pour vous</div>';
+        return;
+      }
+      // Choisir la dernière (id max)
+      const round = myRounds.sort((a, b) => (b.id || 0) - (a.id || 0))[0];
+      currentRound = round || null;
+      await loadRoundStats();
+      const depotId = round.depot_id || 0;
+      if (elDepot) {
+        // Insérer silencieusement le dépôt pour réutiliser la logique existante
+        elDepot.innerHTML = "";
+        const opt = document.createElement("option");
+        opt.value = String(depotId);
+        opt.textContent = round.depot_name || "Dépôt #" + depotId;
+        elDepot.appendChild(opt);
+        elDepot.value = String(depotId);
+      }
+      // 4. Charger les produits du dépôt (prix, infos) puis restreindre au stock attribué
+      const prodResp = await fetch(
+        BASE + `/api/v1/products?depot_id=${depotId}&only_in_stock=1`,
+        { headers: authHeaders() }
+      );
+      let depotProducts = prodResp.ok ? await prodResp.json() : [];
+      depotProducts = Array.isArray(depotProducts) ? depotProducts : [];
+      const assigned = Array.isArray(round.items) ? round.items : [];
+      // Mapper les produits uniquement attribués, et fixer le stock à la quantité assignée (approximation)
+      const statItems = (roundStats?.items || []).reduce((acc, si) => {
+        acc[si.product_id] = si;
+        return acc;
+      }, {});
+      products = assigned
+        .map((it) => {
+          const full = depotProducts.find((p) => p.id === it.product_id) || {};
+          const st = statItems[it.product_id] || {};
+          const remaining =
+            st.qty_remaining != null ? st.qty_remaining : it.qty_assigned || 0;
+          return {
+            id: it.product_id,
+            name: it.name || full.name || "#" + it.product_id,
+            unit_price: full.unit_price || 0,
+            stock_depot: remaining,
+            stock_total: remaining,
+            qty_assigned: st.qty_assigned || it.qty_assigned || 0,
+            qty_sold: st.qty_sold || 0,
+            qty_returned: st.qty_returned || 0,
+          };
+        })
+        .filter((p) => p.stock_depot > 0);
+      if (!products.length) {
+        elProducts.innerHTML =
+          '<div class="muted">Aucun produit attribué</div>';
+        renderRoundInfo();
+        return;
+      }
       applySearch();
-    } catch (_) {
-      elProducts.textContent = "Erreur";
+      renderRoundInfo();
+    } catch (e) {
+      elProducts.innerHTML =
+        '<div class="muted">Erreur chargement stock tournée</div>';
+      renderRoundInfo();
     }
+  }
+
+  // Ancienne fonction de chargement par dépôt conservée pour compatibilité mais non utilisée désormais
+  async function loadProducts() {
+    loadSellerRoundProducts();
   }
 
   function applySearch() {
@@ -250,21 +312,58 @@
     renderProducts(filtered);
   }
 
-  if (elDepot)
-    elDepot.addEventListener("change", () => {
-      cart = [];
-      renderCart();
-      loadProducts();
-    });
+  // Suppression de la sélection interactive du dépôt (tournée automatique)
   if (elSearch) elSearch.addEventListener("input", applySearch);
   if (elCashAll) elCashAll.addEventListener("change", () => computeTotal());
   if (elPaid) elPaid.addEventListener("input", () => updateHint());
+  if (elCollectSubmit) {
+    elCollectSubmit.addEventListener("click", async () => {
+      if (!selectedClient || !selectedClient.id) {
+        window.showToast && window.showToast("error", "Sélectionner un client");
+        return;
+      }
+      const amt = parseInt(elCollect.value, 10) || 0;
+      if (amt <= 0) {
+        window.showToast && window.showToast("error", "Montant invalide");
+        return;
+      }
+      try {
+        const r = await fetch(
+          BASE + "/api/v1/clients/" + selectedClient.id + "/collect",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...authHeaders() },
+            body: JSON.stringify({ amount: amt }),
+          }
+        );
+        const j = r.ok ? await r.json() : null;
+        if (!r.ok) {
+          window.showToast && window.showToast("error", "Recouvrement échoué");
+          return;
+        }
+        window.showToast &&
+          window.showToast(
+            "success",
+            "Recouvrement appliqué " + formatFCFA(amt)
+          );
+        if (typeof j.balance === "number") {
+          selectedClient.balance = j.balance;
+        }
+        elCollect.value = "";
+        renderSelectedClient();
+        updateHint();
+        loadClientStats();
+      } catch (_) {
+        window.showToast && window.showToast("error", "Erreur réseau");
+      }
+    });
+  }
 
   if (elSubmit) {
     elSubmit.addEventListener("click", async () => {
-      const depotId = parseInt(elDepot.value, 10) || 0;
+      const depotId = parseInt(elDepot?.value, 10) || 0; // fixé automatiquement via la tournée
       if (!depotId) {
-        window.showToast && window.showToast("error", "Choisir un dépôt");
+        window.showToast && window.showToast("error", "Aucune tournée / dépôt");
         return;
       }
       if (!cart.length) {
@@ -303,12 +402,48 @@
         const j = await r.json();
         window.showToast &&
           window.showToast("success", "Vente créée #" + (j.sale?.id || ""));
+        if (currentRound && currentRound.id) {
+          await loadRoundStats();
+          const statItems2 = (roundStats?.items || []).reduce((acc, si) => {
+            acc[si.product_id] = si;
+            return acc;
+          }, {});
+          products.forEach((p) => {
+            const st = statItems2[p.id] || {};
+            p.stock_depot =
+              st.qty_remaining != null ? st.qty_remaining : p.stock_depot;
+            p.stock_total = p.stock_depot;
+            p.qty_sold = st.qty_sold || 0;
+          });
+          applySearch();
+          renderRoundInfo();
+        }
         // Reset
         cart = [];
         renderCart();
         elPaid.value = "";
         applySearch();
         updateHint(0);
+        const credit = Math.max(0, total - paid);
+        if (credit > 0 && window.showToast) {
+          window.showToast("info", "Crédit client: " + formatFCFA(credit));
+        }
+        // Rafraîchir solde client
+        try {
+          const rc = await fetch(
+            BASE + "/api/v1/clients/" + selectedClient.id,
+            { headers: authHeaders() }
+          );
+          if (rc.ok) {
+            const cj = await rc.json();
+            if (cj && typeof cj.balance === "number") {
+              selectedClient.balance = cj.balance;
+              renderSelectedClient();
+              updateHint();
+              loadClientStats();
+            }
+          }
+        } catch (_) {}
       } catch (e) {
         window.showToast && window.showToast("error", "Erreur réseau");
       }
@@ -451,9 +586,78 @@
     });
   }
 
+  function renderRoundInfo() {
+    if (!elRoundInfo) return;
+    if (!currentRound) {
+      elRoundInfo.textContent = "Aucune tournée active.";
+      return;
+    }
+    const items = Array.isArray(currentRound.items) ? currentRound.items : [];
+    if (!items.length) {
+      elRoundInfo.textContent = `Tournée #${currentRound.id}: aucun article.`;
+      return;
+    }
+    let h = `Tournée #${currentRound.id} – Articles attribués: `;
+    h += items
+      .map(
+        (it) =>
+          `${(it.name || "#" + it.product_id).replace(/<[^>]*>/g, "")} x ${
+            it.qty_assigned || 0
+          }`
+      )
+      .join(", ");
+    // Ajouter info ventes courantes
+    const totals = roundStats?.totals || null;
+    if (totals) {
+      const credit = Math.max(
+        0,
+        (totals.sales_amount || 0) - (totals.payments_amount || 0)
+      );
+      h += ` | Vendu: ${formatFCFA(
+        totals.sales_amount || 0
+      )} • Payé: ${formatFCFA(
+        totals.payments_amount || 0
+      )} • Crédit: ${formatFCFA(credit)}`;
+    }
+    elRoundInfo.textContent = h;
+  }
+
   // Init
-  loadDepots();
+  // Chargement initial: tournée du livreur
+  loadSellerRoundProducts();
   renderCart();
   renderSelectedClient();
   updateHint(0);
+  async function loadRoundStats() {
+    if (!currentRound || !currentRound.id) return;
+    try {
+      const r = await fetch(
+        BASE + "/api/v1/seller-rounds/" + currentRound.id + "/stats",
+        { headers: authHeaders() }
+      );
+      if (r.ok) {
+        roundStats = await r.json();
+      }
+    } catch (_) {}
+  }
+  async function loadClientStats() {
+    if (!selectedClient || !selectedClient.id || !elClientStats) return;
+    try {
+      const r = await fetch(
+        BASE + "/api/v1/clients/" + selectedClient.id + "/stats",
+        { headers: authHeaders() }
+      );
+      if (!r.ok) {
+        elClientStats.textContent = "";
+        return;
+      }
+      const j = await r.json();
+      const sales = formatFCFA(j.sales_today || 0);
+      const payments = formatFCFA(j.payments_today || 0);
+      const credit = formatFCFA(j.balance || 0);
+      elClientStats.textContent = `Ventes du jour: ${sales} • Recouvrements du jour: ${payments} • Crédit actuel: ${credit}`;
+    } catch (_) {
+      elClientStats.textContent = "";
+    }
+  }
 })();

@@ -21,6 +21,9 @@
   const elTo = document.getElementById("rc-to");
   const elExpCsv = document.getElementById("rc-export-csv");
   const elExpPdf = document.getElementById("rc-export-pdf");
+  const elGroupUser = document.getElementById("rc-group-user");
+  const elRouteCsv = document.getElementById("rc-route-csv");
+  const elRoutePdf = document.getElementById("rc-route-pdf");
   const elScopeHint = document.getElementById("rc-scope-hint");
   const elClientInfo = document.getElementById("rc-client-info");
   const elLedgerCsv = document.getElementById("rc-ledger-csv");
@@ -153,13 +156,36 @@
     const f =
       elFrom && elFrom.value ? `&from=${encodeURIComponent(elFrom.value)}` : "";
     const t = elTo && elTo.value ? `&to=${encodeURIComponent(elTo.value)}` : "";
+    const grp = elGroupUser && elGroupUser.checked ? `&group_by=user` : "";
     const token = (
       localStorage.getItem("api_token") ||
       getCookie("api_token") ||
       ""
     ).trim();
     const tk = token ? `&api_token=${encodeURIComponent(token)}` : "";
-    const url = `/api/v1/receivables/export?format=${fmt}${dep}${usr}${f}${t}${tk}`;
+    const url = `/api/v1/receivables/export?format=${fmt}${dep}${usr}${f}${t}${grp}${tk}`;
+    window.open(url, "_blank");
+  }
+
+  function exportRoutePlan(fmt) {
+    const dep =
+      elDepot && elDepot.value
+        ? `&depot_id=${encodeURIComponent(elDepot.value)}`
+        : "";
+    const usr =
+      elUser && elUser.value
+        ? `&user_id=${encodeURIComponent(elUser.value)}`
+        : "";
+    const f =
+      elFrom && elFrom.value ? `&from=${encodeURIComponent(elFrom.value)}` : "";
+    const t = elTo && elTo.value ? `&to=${encodeURIComponent(elTo.value)}` : "";
+    const token = (
+      localStorage.getItem("api_token") ||
+      getCookie("api_token") ||
+      ""
+    ).trim();
+    const tk = token ? `&api_token=${encodeURIComponent(token)}` : "";
+    const url = `/api/v1/receivables/route-plan?format=${fmt}${dep}${usr}${f}${t}${tk}`;
     window.open(url, "_blank");
   }
 
@@ -216,6 +242,10 @@
     elExpCsv.addEventListener("click", () => exportReceivables("csv"));
   if (elExpPdf)
     elExpPdf.addEventListener("click", () => exportReceivables("pdf"));
+  if (elRouteCsv)
+    elRouteCsv.addEventListener("click", () => exportRoutePlan("csv"));
+  if (elRoutePdf)
+    elRoutePdf.addEventListener("click", () => exportRoutePlan("pdf"));
   if (elLedgerCsv)
     elLedgerCsv.addEventListener("click", () => exportLedger("csv"));
   if (elLedgerPdf)
