@@ -1,4 +1,6 @@
 (() => {
+  const BASE = window.APP_BASE || "/hill_new/public";
+
   function getCookie(name) {
     const parts = ("; " + document.cookie).split("; " + name + "=");
     if (parts.length === 2) return parts.pop().split(";").shift();
@@ -17,30 +19,34 @@
       getCookie("api_token") ||
       ""
     ).trim();
+
     const headers = token ? { Authorization: "Bearer " + token } : {};
+
     const q = new URLSearchParams();
     if (els.period && els.period.value) q.set("days", els.period.value);
     if (els.depot && els.depot.style.display !== "none" && els.depot.value)
       q.set("depot_id", els.depot.value);
     if (els.threshold && els.threshold.value)
       q.set("threshold", els.threshold.value);
+
     const r = await fetch(
-      "/api/v1/summary" + (q.toString() ? "?" + q.toString() : ""),
+      BASE + "/api/v1/summary" + (q.toString() ? "?" + q.toString() : ""),
       { headers }
     );
+
     if (!r.ok) {
       const c = document.getElementById("client-credit");
       if (c) c.innerHTML = '<div class="muted">Connectez-vous</div>';
       return;
     }
+
     const data = await r.json();
-    // Role hint
+
     const rh = document.getElementById("role-hint");
     if (rh && data.visibility && data.visibility.role) {
       rh.textContent = `Rôle: ${data.visibility.role}`;
     }
 
-    // Show depot select for admin only
     if (data.visibility && data.visibility.role === "admin") {
       if (els.depotLabel) els.depotLabel.style.display = "inline-block";
       if (els.depot) {
@@ -71,7 +77,6 @@
     renderLowStock(data.low_stock || []);
     renderLatestSales(data.latest_sales || []);
 
-    // Update title with threshold
     const lst = document.getElementById("low-stock-title");
     if (lst && els.threshold && els.threshold.value) {
       lst.textContent = `Produits en alerte stock (≤ ${els.threshold.value})`;
@@ -116,6 +121,7 @@
     let roundsOpen = document.getElementById("qs-rounds-open");
     let cashToday = document.getElementById("qs-cash-today");
     let collToday = document.getElementById("qs-collections-today");
+
     if (ca) ca.textContent = q.ca_today;
     if (sales) sales.textContent = q.sales_today;
     if (clients) clients.textContent = q.active_clients;
@@ -145,7 +151,6 @@
       const y = h - (v / max) * (h - 4) - 2;
       d += (i === 0 ? "M" : "L") + x + "," + y;
     });
-    // area fill
     let area = d + " L " + w + "," + h + " L 0," + h + " Z";
     el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">
         <path d="${area}" fill="rgba(255,212,0,0.25)"></path>
@@ -155,7 +160,7 @@
 
   async function loadDepots(headers) {
     try {
-      const r = await fetch("/api/v1/depots", { headers });
+      const r = await fetch(BASE + "/api/v1/depots", { headers });
       if (!r.ok) return;
       const rows = await r.json();
       if (!Array.isArray(rows)) return;
@@ -181,24 +186,17 @@
       if (!el) return;
       el.style.display = show ? "block" : "none";
     };
-    // Finance-driven blocks
     toggle("kpi-receivables", !!v.finance);
     toggle("block-revenue", !!v.finance);
     toggle("kpi-cash-today", !!v.finance);
     toggle("kpi-collections-today", !!v.finance);
-    // Stocks
     toggle("kpi-stock", !!v.stocks);
     toggle("kpi-stock-valuation", !!v.stocks);
     toggle("card-low-stock", !!v.stocks);
-    // Clients
     toggle("card-clients", !!v.clients);
-    // Orders
     toggle("card-orders", !!v.orders);
-    // Users
     toggle("card-users", !!v.users);
-    // Top products: visible si finance ou orders (recettes/commandes)
     toggle("card-top-products", !!(v.finance || v.orders));
-    // Quick actions: visibles pour livreur, ou si ventes/clients visibles
     toggle("quick-actions", v.role === "livreur" || !!(v.sales || v.clients));
   }
 
@@ -301,9 +299,7 @@
     c.innerHTML = h;
   }
 
-  function renderLatestSales(rows) {
-    // Optionnel: à brancher si on ajoute un bloc pour lister les dernières ventes
-  }
+  function renderLatestSales(rows) {}
 
   const btn = document.getElementById("btn-refresh");
   if (btn) {
@@ -316,7 +312,6 @@
   if (els.depot) els.depot.addEventListener("change", fetchSummary);
   if (els.threshold) els.threshold.addEventListener("change", fetchSummary);
 
-  // Export handlers
   function currentFiltersQuery(withToken = false) {
     const q = new URLSearchParams();
     if (els.period && els.period.value) q.set("days", els.period.value);
@@ -340,14 +335,18 @@
     btnCsv.addEventListener("click", () => {
       const q = currentFiltersQuery(true);
       window.location.href =
-        "/api/v1/dashboard/export" + (q.toString() ? "?" + q.toString() : "");
+        BASE +
+        "/api/v1/dashboard/export" +
+        (q.toString() ? "?" + q.toString() : "");
     });
   }
+
   const btnPdf = document.getElementById("btn-export-pdf");
   if (btnPdf) {
     btnPdf.addEventListener("click", () => {
       const q = currentFiltersQuery(true);
       window.location.href =
+        BASE +
         "/api/v1/dashboard/export-pdf" +
         (q.toString() ? "?" + q.toString() : "");
     });

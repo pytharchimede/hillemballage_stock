@@ -2258,7 +2258,8 @@ if (str_starts_with($path, '/api/v1')) {
         $paramDepot = isset($_GET['depot_id']) ? (int)$_GET['depot_id'] : null;
         $threshold = (int)($_GET['threshold'] ?? 5);
         if (!in_array($threshold, [3, 5, 10], true)) $threshold = 5;
-        // Ensure optional tables for rounds and payments
+
+        // Ensure tables/columns exist
         try {
             ensure_seller_rounds_tables();
         } catch (\Throwable $e) {
@@ -2267,248 +2268,133 @@ if (str_starts_with($path, '/api/v1')) {
             ensure_sale_payments_table();
         } catch (\Throwable $e) {
         }
-        // Ensure cost_price column exists on products
         try {
             $col = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="products" AND COLUMN_NAME="cost_price"');
-            if (!$col) {
-                DB::execute('ALTER TABLE products ADD COLUMN cost_price INT NOT NULL DEFAULT 0 AFTER unit_price');
-            }
+            if (!$col) DB::execute('ALTER TABLE products ADD COLUMN cost_price INT NOT NULL DEFAULT 0 AFTER unit_price');
         } catch (\Throwable $e) {
         }
 
-        // Scope helpers (sales)
+        // ---------------------------
+        // Sales scope (WHERE conditions)
+        // ---------------------------
         $salesWhere = [];
         $salesParams = [];
-        if ($role === 'admin') {
-            // admin may focus a specific depot if provided
-            if ($paramDepot && $paramDepot > 0) {
-                $salesWhere[] = 'depot_id = :dep';
-                $salesParams[':dep'] = $paramDepot;
-            }
+        if ($role === 'admin' && $paramDepot > 0) {
+            $salesWhere[] = 's.depot_id = :dep';
+            $salesParams[':dep'] = $paramDepot;
         } elseif ($role === 'gerant' && $userDepotId > 0) {
-            $salesWhere[] = 'depot_id = :dep';
+            $salesWhere[] = 's.depot_id = :dep';
             $salesParams[':dep'] = $userDepotId;
         } else {
-            $salesWhere[] = 'user_id = :uid';
+            $salesWhere[] = 's.user_id = :uid';
             $salesParams[':uid'] = $uid;
         }
-        $salesScopeSql = $salesWhere ? (' WHERE ' . implode(' AND ', $salesWhere)) : '';
 
-        // Scope helpers (stocks)
-        $stockWhere = [];
-        $stockParams = [];
-        if ($role === 'admin') {
-        } elseif ($role === 'gerant' && $userDepotId > 0) {
-            $stockWhere[] = 's.depot_id = :dep';
-            $stockParams[':dep'] = $userDepotId;
-        } else {
-            // pas de contrainte claire pour stocks par utilisateur, laisser vide
-        }
-        $stockScopeSql = $stockWhere ? (' WHERE ' . implode(' AND ', $stockWhere)) : '';
+        // ---------------------------
+        // Stocks scope
+        // ---------------------------
+        $stockParams = [':dep' => $userDepotId > 0 ? $userDepotId : 1];
 
+        // ---------------------------
         // Stock KPIs
-        $stockTotal = (int)(DB::query('SELECT COALESCE(SUM(quantity),0) qty FROM stocks s' . ($stockScopeSql ? $stockScopeSql : ''))[0]['qty'] ?? 0);
-        $stockValuation = (int)(DB::query('SELECT COALESCE(SUM(s.quantity * p.cost_price),0) v FROM stocks s JOIN products p ON p.id=s.product_id' . ($stockScopeSql ? $stockScopeSql : ''), $stockParams)[0]['v'] ?? 0);
-        $stockLines = DB::query('SELECT COALESCE(SUM(s.quantity),0) quantity, p.name FROM products p LEFT JOIN stocks s ON s.product_id=p.id' . ($stockScopeSql ? $stockScopeSql : '') . ' GROUP BY p.id,p.name ORDER BY quantity DESC LIMIT 10', $stockParams);
+        // ---------------------------
+        $stockTotal = (int)(DB::query('SELECT COALESCE(SUM(s.quantity),0) AS qty FROM stocks s WHERE s.depot_id = :dep', $stockParams)[0]['qty'] ?? 0);
+        $stockValuation = (int)(DB::query('SELECT COALESCE(SUM(s.quantity * p.cost_price),0) AS v FROM stocks s JOIN products p ON p.id = s.product_id WHERE s.depot_id = :dep', $stockParams)[0]['v'] ?? 0);
+        $stockLines = DB::query('SELECT COALESCE(SUM(s.quantity),0) AS quantity, p.name FROM products p LEFT JOIN stocks s ON s.product_id=p.id WHERE s.depot_id = :dep GROUP BY p.id,p.name ORDER BY quantity ASC, p.name ASC LIMIT 10', $stockParams);
 
-        // Top soldes clients (créances) dans le scope
-        $topBalances = DB::query('SELECT c.id, c.name, (SUM(s.total_amount) - SUM(s.amount_paid)) AS balance FROM sales s JOIN clients c ON c.id = s.client_id' . $salesScopeSql . ' GROUP BY c.id,c.name HAVING balance > 0 ORDER BY balance DESC LIMIT 5', $salesParams);
+        // ---------------------------
+        // Top client balances
+        // ---------------------------
+        $topBalancesWhere = $salesWhere; // copy of scope conditions
+        $topBalancesSql = 'SELECT c.id, c.name, (SUM(s.total_amount) - SUM(s.amount_paid)) AS balance
+        FROM sales s
+        JOIN clients c ON c.id = s.client_id';
+        if ($topBalancesWhere) $topBalancesSql .= ' WHERE ' . implode(' AND ', $topBalancesWhere);
+        $topBalancesSql .= ' GROUP BY c.id,c.name HAVING balance > 0 ORDER BY balance DESC LIMIT 5';
+        $topBalances = DB::query($topBalancesSql, $salesParams);
 
-        // Encours total (receivables)
-        $receivablesTotal = (int)(DB::query('SELECT COALESCE(SUM(total_amount - amount_paid),0) v FROM sales' . $salesScopeSql, $salesParams)[0]['v'] ?? 0);
+        // ---------------------------
+        // Receivables total
+        // ---------------------------
+        $receivablesTotalSql = 'SELECT COALESCE(SUM(total_amount - amount_paid),0) AS v FROM sales s';
+        if ($salesWhere) $receivablesTotalSql .= ' WHERE ' . implode(' AND ', $salesWhere);
+        $receivablesTotal = (int)(DB::query($receivablesTotalSql, $salesParams)[0]['v'] ?? 0);
 
-        // Daily detailed (use user depot if available, else 1)
-        $today = date('Y-m-d');
-        $dailyDepot = $userDepotId > 0 ? $userDepotId : 1;
-        $daily = ReportService::daily($dailyDepot, $today);
+        // ---------------------------
+        // Quick stats (CA today, sales today, active clients)
+        // ---------------------------
+        $quickWhere = $salesWhere; // copy scope
+        $quickWhere[] = 'DATE(s.sold_at) = CURDATE()';
+        $whereSql = ' WHERE ' . implode(' AND ', $quickWhere);
 
-        // Quick stats (today)
-        $sqlBaseToday = ' FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' DATE(sold_at)=CURDATE()';
-        $caToday = (int)(DB::query('SELECT COALESCE(SUM(total_amount),0) v' . $sqlBaseToday, $salesParams)[0]['v'] ?? 0);
-        $salesToday = (int)(DB::query('SELECT COUNT(*) c' . $sqlBaseToday, $salesParams)[0]['c'] ?? 0);
-        $activeClients30 = (int)(DB::query('SELECT COUNT(DISTINCT client_id) c FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)', $salesParams)[0]['c'] ?? 0);
+        $caToday = (int)(DB::query('SELECT COALESCE(SUM(total_amount),0) AS v FROM sales s' . $whereSql, $salesParams)[0]['v'] ?? 0);
+        $salesToday = (int)(DB::query('SELECT COUNT(*) AS c FROM sales s' . $whereSql, $salesParams)[0]['c'] ?? 0);
+        $activeClients30Where = $salesWhere;
+        $activeClients30Where[] = 'sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)';
+        $activeClients30 = (int)(DB::query('SELECT COUNT(DISTINCT client_id) AS c FROM sales s WHERE ' . implode(' AND ', $activeClients30Where), $salesParams)[0]['c'] ?? 0);
 
-        // Sparkline last 7 days revenue (scope)
-        $sparkRows = DB::query('SELECT DATE(sold_at) d, SUM(total_amount) v FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' sold_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY) GROUP BY DATE(sold_at) ORDER BY d ASC', $salesParams);
-        $map7 = [];
-        foreach ($sparkRows as $r) {
-            $map7[$r['d']] = (int)$r['v'];
-        }
+        // ---------------------------
+        // Sparkline last 7 days
+        // ---------------------------
+        $sparkWhere = $salesWhere;
+        $sparkWhere[] = 'sold_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)';
+        $sparkRows = DB::query('SELECT DATE(s.sold_at) d, SUM(total_amount) v FROM sales s WHERE ' . implode(' AND ', $sparkWhere) . ' GROUP BY DATE(s.sold_at) ORDER BY d ASC', $salesParams);
         $spark = [];
         for ($i = 6; $i >= 0; $i--) {
             $dt = date('Y-m-d', strtotime("-{$i} day"));
-            $spark[] = ['date' => $dt, 'value' => ($map7[$dt] ?? 0)];
+            $sparkMap = array_column($sparkRows, 'v', 'd');
+            $spark[] = ['date' => $dt, 'value' => (int)($sparkMap[$dt] ?? 0)];
         }
 
-        // Revenue last 30 days (scope)
-        $rows30 = DB::query('SELECT DATE(sold_at) d, SUM(total_amount) v FROM sales' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' sold_at >= DATE_SUB(CURDATE(), INTERVAL ' . ($days - 1) . ' DAY) GROUP BY DATE(sold_at) ORDER BY d ASC', $salesParams);
-        $map30 = [];
-        foreach ($rows30 as $r) {
-            $map30[$r['d']] = (int)$r['v'];
-        }
+        // ---------------------------
+        // Revenue last 30 days
+        // ---------------------------
+        $revWhere = $salesWhere;
+        $revWhere[] = 'sold_at >= DATE_SUB(CURDATE(), INTERVAL ' . ($days - 1) . ' DAY)';
+        $rows30 = DB::query('SELECT DATE(s.sold_at) d, SUM(total_amount) v FROM sales s WHERE ' . implode(' AND ', $revWhere) . ' GROUP BY DATE(s.sold_at) ORDER BY d ASC', $salesParams);
         $series30 = [];
+        $revMap = array_column($rows30, 'v', 'd');
         for ($i = $days - 1; $i >= 0; $i--) {
             $dt = date('Y-m-d', strtotime("-{$i} day"));
-            $series30[] = ['date' => $dt, 'value' => ($map30[$dt] ?? 0)];
+            $series30[] = ['date' => $dt, 'value' => (int)($revMap[$dt] ?? 0)];
         }
 
-        // Top products by revenue (30d)
-        $topProducts = DB::query('SELECT p.name, SUM(si.subtotal) total FROM sale_items si JOIN sales s ON s.id=si.sale_id JOIN products p ON p.id=si.product_id' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' s.sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY p.id,p.name ORDER BY total DESC LIMIT 10', $salesParams);
+        // ---------------------------
+        // Top products 30d
+        // ---------------------------
+        $prodWhere = $salesWhere;
+        $prodWhere[] = 's.sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)';
+        $topProducts = DB::query('SELECT p.name, SUM(si.subtotal) total FROM sale_items si JOIN sales s ON s.id=si.sale_id JOIN products p ON p.id=si.product_id WHERE ' . implode(' AND ', $prodWhere) . ' GROUP BY p.id,p.name ORDER BY total DESC LIMIT 10', $salesParams);
 
-        // Low stock products (<= threshold)
-        $lowStock = DB::query('SELECT p.id, p.name, COALESCE(SUM(s.quantity),0) qty FROM products p LEFT JOIN stocks s ON s.product_id=p.id' . ($stockScopeSql ? $stockScopeSql : '') . ' GROUP BY p.id,p.name HAVING qty <= :th ORDER BY qty ASC, p.name ASC LIMIT 10', $stockParams + [':th' => $threshold]);
+        // ---------------------------
+        // Low stock products
+        // ---------------------------
+        $lowStock = DB::query('SELECT p.id, p.name, COALESCE(SUM(s.quantity),0) qty FROM products p LEFT JOIN stocks s ON s.product_id=p.id WHERE s.depot_id = :dep GROUP BY p.id,p.name HAVING qty <= :th ORDER BY qty ASC, p.name ASC LIMIT 10', $stockParams + [':th' => $threshold]);
 
-        // Orders status distribution (global or scope-agnostic)
-        $ordersStatus = DB::query('SELECT status, COUNT(*) c FROM orders GROUP BY status');
-
-        // Top users by sales (30d, scoped by depot if needed)
-        $byUser = DB::query('SELECT u.id, u.name, SUM(s.total_amount) total FROM sales s JOIN users u ON u.id=s.user_id' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' s.sold_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY u.id,u.name ORDER BY total DESC LIMIT 5', $salesParams);
-
-        // Latest sales (10)
-        $latest = DB::query('SELECT s.id, c.name AS client_name, s.total_amount, s.sold_at, s.depot_id FROM sales s LEFT JOIN clients c ON c.id=s.client_id' . ($salesScopeSql ? $salesScopeSql . ' AND' : ' WHERE') . ' s.sold_at IS NOT NULL ORDER BY s.sold_at DESC LIMIT 10', $salesParams);
-
-        // Operational KPIs: rounds open, cash turned in today, collections today
-        // Rounds open (scoped)
-        $roundsWhere = ['sr.status = "open"'];
-        $roundsParams = [];
-        if ($role === 'admin') {
-            if ($paramDepot && $paramDepot > 0) {
-                $roundsWhere[] = 'sr.depot_id = :dep';
-                $roundsParams[':dep'] = $paramDepot;
-            }
-        } elseif ($role === 'gerant' && $userDepotId > 0) {
-            $roundsWhere[] = 'sr.depot_id = :dep';
-            $roundsParams[':dep'] = $userDepotId;
-        } else {
-            $roundsWhere[] = 'sr.user_id = :uid';
-            $roundsParams[':uid'] = $uid;
-        }
-        $roundsSql = 'SELECT COUNT(*) c FROM seller_rounds sr WHERE ' . implode(' AND ', $roundsWhere);
-        $roundsOpen = (int)(DB::query($roundsSql, $roundsParams)[0]['c'] ?? 0);
-
-        // Cash turned in today (closed today)
-        $cashWhere = ['sr.status = "closed"', 'DATE(sr.closed_at) = CURDATE()'];
-        $cashParams = [];
-        if ($role === 'admin') {
-            if ($paramDepot && $paramDepot > 0) {
-                $cashWhere[] = 'sr.depot_id = :dep';
-                $cashParams[':dep'] = $paramDepot;
-            }
-        } elseif ($role === 'gerant' && $userDepotId > 0) {
-            $cashWhere[] = 'sr.depot_id = :dep';
-            $cashParams[':dep'] = $userDepotId;
-        } else {
-            $cashWhere[] = 'sr.user_id = :uid';
-            $cashParams[':uid'] = $uid;
-        }
-        $cashSql = 'SELECT COALESCE(SUM(sr.cash_turned_in),0) v FROM seller_rounds sr WHERE ' . implode(' AND ', $cashWhere);
-        $cashToday = (int)(DB::query($cashSql, $cashParams)[0]['v'] ?? 0);
-
-        // Collections (recouvrement) today based on sale_payments joined to sales with same scope
-        $payWhere = ['DATE(sp.paid_at) = CURDATE()'];
-        $payParams = $salesParams; // reuse params names :dep / :uid
-        if ($role === 'admin') {
-            if ($paramDepot && $paramDepot > 0) {
-                $payWhere[] = 's.depot_id = :dep';
-            }
-        } elseif ($role === 'gerant' && $userDepotId > 0) {
-            $payWhere[] = 's.depot_id = :dep';
-        } else {
-            $payWhere[] = 's.user_id = :uid';
-        }
-        $collSql = 'SELECT COALESCE(SUM(sp.amount),0) v FROM sale_payments sp JOIN sales s ON s.id = sp.sale_id WHERE ' . implode(' AND ', $payWhere);
-        $collectionsToday = (int)(DB::query($collSql, $payParams)[0]['v'] ?? 0);
-
-        // Visibility (coarse-grained)
-        $visibility = [
-            'finance' => ($role === 'admin' || $role === 'gerant'),
-            'clients' => (function () use ($auth) {
-                try {
-                    return can($auth, 'clients', 'view');
-                } catch (\Throwable $e) {
-                    return false;
-                }
-            })(),
-            'stocks' => (function () use ($auth) {
-                try {
-                    return can($auth, 'stocks', 'view');
-                } catch (\Throwable $e) {
-                    return false;
-                }
-            })(),
-            'orders' => (function () use ($auth) {
-                try {
-                    return can($auth, 'orders', 'view');
-                } catch (\Throwable $e) {
-                    return false;
-                }
-            })(),
-            'users' => (function () use ($auth) {
-                try {
-                    return can($auth, 'users', 'view');
-                } catch (\Throwable $e) {
-                    return false;
-                }
-            })(),
-            'sales' => (function () use ($auth) {
-                try {
-                    return can($auth, 'sales', 'view');
-                } catch (\Throwable $e) {
-                    return false;
-                }
-            })(),
-            'audit' => ($role === 'admin'),
-            'role' => $role
-        ];
-
-        // Server-side KPI masking based on visibility flags
-        if (!$visibility['finance']) {
-            $receivablesTotal = null;
-            $series30 = [];
-            $cashToday = null;
-            $collectionsToday = null;
-        }
-        if (!$visibility['stocks']) {
-            $stockTotal = null;
-            $stockValuation = null;
-            $lowStock = [];
-            $stockLines = [];
-        }
-        if (!$visibility['clients']) {
-            $topBalances = [];
-        }
-        if (!$visibility['users']) {
-            $byUser = [];
-        }
-
+        // ---------------------------
+        // Retour JSON
+        // ---------------------------
         echo json_encode([
-            'stock_total' => $stockTotal !== null ? (int)$stockTotal : null,
+            'stock_total' => $stockTotal,
             'stock_items' => $stockLines,
-            'stock_valuation' => isset($stockValuation) && $stockValuation !== null ? (int)$stockValuation : null,
+            'stock_valuation' => $stockValuation,
             'top_balances' => $topBalances,
-            'daily' => $daily,
             'quick_stats' => [
                 'ca_today' => $caToday,
                 'sales_today' => $salesToday,
                 'active_clients' => $activeClients30,
                 'receivables_total' => $receivablesTotal,
-                'rounds_open' => $roundsOpen,
-                'cash_turned_in_today' => $cashToday,
-                'collections_today' => $collectionsToday,
-                'stock_valuation' => isset($stockValuation) && $stockValuation !== null ? (int)$stockValuation : null,
                 'window' => $days . 'd'
             ],
             'sparkline' => $spark,
             'revenue_30d' => $series30,
             'top_products_30d' => $topProducts,
-            'low_stock' => $lowStock,
-            'orders_status' => $ordersStatus,
-            'sales_by_user_30d' => $byUser,
-            'latest_sales' => $latest,
-            'visibility' => $visibility
+            'low_stock' => $lowStock
         ]);
         exit;
     }
+
+
     if (preg_match('#^/api/v1/users/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $u = requireAuth();
         requirePermission($u, 'users', 'view');
