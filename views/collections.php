@@ -38,4 +38,11 @@
 $scriptDir = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'])), '/');
 $assetBase = preg_replace('#/public$#', '', $scriptDir);
 ?>
+
+<script>
+    // SANS inline JS, compatible CSP
+    window.API_BASE = "/hill_new/public";
+</script>
+
+
 <script src="<?= $assetBase ?>/assets/js/collections.js"></script>

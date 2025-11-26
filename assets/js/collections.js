@@ -1,4 +1,6 @@
 (() => {
+  const BASE = window.API_BASE || ""; // <<< Correction clé
+
   function getCookie(name) {
     const parts = ("; " + document.cookie).split("; " + name + "=");
     if (parts.length === 2) return parts.pop().split(";").shift();
@@ -31,7 +33,9 @@
 
   async function loadClients() {
     try {
-      const r = await fetch("/api/v1/clients", { headers: authHeaders() });
+      const r = await fetch(BASE + "/api/v1/clients", {
+        headers: authHeaders(),
+      });
       if (!r.ok) throw new Error("clients");
       const rows = await r.json();
       elClient.innerHTML = "";
@@ -51,9 +55,10 @@
   }
 
   async function loadDepotsAndUsers() {
-    // depots: admin -> tous; sinon -> un seul (API renvoie déjà selon scope)
     try {
-      const r = await fetch("/api/v1/depots", { headers: authHeaders() });
+      const r = await fetch(BASE + "/api/v1/depots", {
+        headers: authHeaders(),
+      });
       const rows = r.ok ? await r.json() : [];
       if (elDepot) {
         elDepot.innerHTML = '<option value="">(tous dépôts)</option>';
@@ -73,7 +78,8 @@
     const dep = (elDepot && elDepot.value) || "";
     try {
       const r = await fetch(
-        `/api/v1/users/brief?role=livreur${dep ? `&depot_id=${dep}` : ""}`,
+        BASE +
+          `/api/v1/users/brief?role=livreur${dep ? `&depot_id=${dep}` : ""}`,
         { headers: authHeaders() }
       );
       const rows = r.ok ? await r.json() : [];
@@ -89,11 +95,11 @@
 
   async function loadSales(clientId) {
     try {
-      // afficher infos client (solde/plafond)
       try {
-        const ci = await fetch(`/api/v1/clients/${clientId}`, {
+        const ci = await fetch(BASE + `/api/v1/clients/${clientId}`, {
           headers: authHeaders(),
         });
+
         if (ci.ok) {
           const c = await ci.json();
           const bl = c.balance || 0;
@@ -109,31 +115,44 @@
           elClientInfo.textContent = txt;
         }
       } catch {}
-      const r = await fetch(`/api/v1/sales?client_id=${clientId}`, {
+
+      const r = await fetch(BASE + `/api/v1/sales?client_id=${clientId}`, {
         headers: authHeaders(),
       });
+
       if (!r.ok) throw new Error("sales");
       const rows = await r.json();
       const unpaid = rows.filter((s) => s.total_amount - s.amount_paid > 0);
+
       if (!unpaid.length) {
         elSales.innerHTML =
           '<div class="muted">Aucune créance pour ce client.</div>';
         return;
       }
+
       let h =
         '<table class="excel"><thead><tr><th>#</th><th>Date</th><th>Total</th><th>Payé</th><th>Reste</th><th>Paiement</th><th>Méthode</th><th></th></tr></thead><tbody>';
+
       unpaid.forEach((s) => {
         const rest = s.total_amount - s.amount_paid;
-        h +=
-          `<tr><td>${s.id}</td><td>${(s.sold_at || "")
-            .toString()
-            .slice(0, 19)}</td><td>${s.total_amount}</td><td>${
-            s.amount_paid
-          }</td><td>${rest}</td>` +
-          `<td><input type="number" min="1" max="${rest}" data-id="${s.id}" class="form-control compact pay-amt" style="width:120px"></td>` +
-          `<td><input type="text" data-id="${s.id}" class="form-control compact pay-met" style="width:120px" placeholder="(optionnel)"></td>` +
-          `<td><button class="btn small do-pay" data-id="${s.id}">Enregistrer</button></td></tr>`;
+        h += `<tr>
+          <td>${s.id}</td>
+          <td>${(s.sold_at || "").toString().slice(0, 19)}</td>
+          <td>${s.total_amount}</td>
+          <td>${s.amount_paid}</td>
+          <td>${rest}</td>
+          <td><input type="number" min="1" max="${rest}" data-id="${
+          s.id
+        }" class="form-control compact pay-amt" style="width:120px"></td>
+          <td><input type="text" data-id="${
+            s.id
+          }" class="form-control compact pay-met" style="width:120px" placeholder="(optionnel)"></td>
+          <td><button class="btn small do-pay" data-id="${
+            s.id
+          }">Enregistrer</button></td>
+        </tr>`;
       });
+
       h += "</tbody></table>";
       elSales.innerHTML = h;
       elSales
@@ -145,52 +164,50 @@
   }
 
   function exportReceivables(fmt) {
-    const dep =
-      elDepot && elDepot.value
-        ? `&depot_id=${encodeURIComponent(elDepot.value)}`
-        : "";
-    const usr =
-      elUser && elUser.value
-        ? `&user_id=${encodeURIComponent(elUser.value)}`
-        : "";
-    const f =
-      elFrom && elFrom.value ? `&from=${encodeURIComponent(elFrom.value)}` : "";
-    const t = elTo && elTo.value ? `&to=${encodeURIComponent(elTo.value)}` : "";
-    const grp = elGroupUser && elGroupUser.checked ? `&group_by=user` : "";
+    const dep = elDepot?.value
+      ? `&depot_id=${encodeURIComponent(elDepot.value)}`
+      : "";
+    const usr = elUser?.value
+      ? `&user_id=${encodeURIComponent(elUser.value)}`
+      : "";
+    const f = elFrom?.value ? `&from=${encodeURIComponent(elFrom.value)}` : "";
+    const t = elTo?.value ? `&to=${encodeURIComponent(elTo.value)}` : "";
+    const grp = elGroupUser?.checked ? `&group_by=user` : "";
     const token = (
       localStorage.getItem("api_token") ||
       getCookie("api_token") ||
       ""
     ).trim();
     const tk = token ? `&api_token=${encodeURIComponent(token)}` : "";
-    const url = `/api/v1/receivables/export?format=${fmt}${dep}${usr}${f}${t}${grp}${tk}`;
+    const url =
+      BASE +
+      `/api/v1/receivables/export?format=${fmt}${dep}${usr}${f}${t}${grp}${tk}`;
     window.open(url, "_blank");
   }
 
   function exportRoutePlan(fmt) {
-    const dep =
-      elDepot && elDepot.value
-        ? `&depot_id=${encodeURIComponent(elDepot.value)}`
-        : "";
-    const usr =
-      elUser && elUser.value
-        ? `&user_id=${encodeURIComponent(elUser.value)}`
-        : "";
-    const f =
-      elFrom && elFrom.value ? `&from=${encodeURIComponent(elFrom.value)}` : "";
-    const t = elTo && elTo.value ? `&to=${encodeURIComponent(elTo.value)}` : "";
+    const dep = elDepot?.value
+      ? `&depot_id=${encodeURIComponent(elDepot.value)}`
+      : "";
+    const usr = elUser?.value
+      ? `&user_id=${encodeURIComponent(elUser.value)}`
+      : "";
+    const f = elFrom?.value ? `&from=${encodeURIComponent(elFrom.value)}` : "";
+    const t = elTo?.value ? `&to=${encodeURIComponent(elTo.value)}` : "";
     const token = (
       localStorage.getItem("api_token") ||
       getCookie("api_token") ||
       ""
     ).trim();
     const tk = token ? `&api_token=${encodeURIComponent(token)}` : "";
-    const url = `/api/v1/receivables/route-plan?format=${fmt}${dep}${usr}${f}${t}${tk}`;
+    const url =
+      BASE +
+      `/api/v1/receivables/route-plan?format=${fmt}${dep}${usr}${f}${t}${tk}`;
     window.open(url, "_blank");
   }
 
   function exportLedger(fmt) {
-    const cid = parseInt(elClient && elClient.value, 10);
+    const cid = parseInt(elClient?.value, 10);
     if (!cid) return;
     const token = (
       localStorage.getItem("api_token") ||
@@ -198,7 +215,8 @@
       ""
     ).trim();
     const tk = token ? `&api_token=${encodeURIComponent(token)}` : "";
-    const url = `/api/v1/clients/${cid}/ledger/export?format=${fmt}${tk}`;
+    const url =
+      BASE + `/api/v1/clients/${cid}/ledger/export?format=${fmt}${tk}`;
     window.open(url, "_blank");
   }
 
@@ -212,15 +230,16 @@
     const met =
       elSales.querySelector(`input.pay-met[data-id="${id}"]`).value || null;
     if (!amt || amt <= 0) return;
+
     try {
-      const r = await fetch(`/api/v1/sales/${id}/payments`, {
+      const r = await fetch(BASE + `/api/v1/sales/${id}/payments`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ amount: amt, method: met }),
       });
       if (!r.ok) throw new Error(await r.text());
       await r.json();
-      // refresh current client
+
       const cid = parseInt(elClient.value, 10);
       if (cid) loadSales(cid);
     } catch (_) {
