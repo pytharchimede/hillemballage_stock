@@ -342,18 +342,39 @@
           .filter((r) => r.quantity > 0);
       } catch (_) {}
       const cash = parseInt(dlg.dataset.roundStatsPayments || "0", 10) || 0;
+      let resp,
+        errMsg = "";
       try {
-        const r = await fetch(BASE + `/api/v1/seller-rounds/${roundId}`, {
+        resp = await fetch(BASE + `/api/v1/seller-rounds/${roundId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json", ...authHeaders() },
           body: JSON.stringify({ returns, cash_turned_in: cash }),
         });
-        if (!r.ok) throw new Error(await r.text());
-        dlg.remove();
-        loadRounds();
+        if (!resp.ok) throw new Error(await resp.text());
       } catch (e) {
-        alert("Erreur de clôture");
+        // Fallback POST + _method=PATCH si PATCH échoue
+        try {
+          resp = await fetch(BASE + `/api/v1/seller-rounds/${roundId}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...authHeaders() },
+            body: JSON.stringify({
+              _method: "PATCH",
+              returns,
+              cash_turned_in: cash,
+            }),
+          });
+          if (!resp.ok) throw new Error(await resp.text());
+        } catch (e2) {
+          errMsg =
+            (typeof e2.message === "string"
+              ? e2.message
+              : "Erreur de clôture") || "Erreur de clôture";
+          alert("Erreur de clôture :\n" + errMsg);
+          return;
+        }
       }
+      dlg.remove();
+      loadRounds();
     });
   }
 

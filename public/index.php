@@ -1733,52 +1733,73 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode(['round' => ['id' => $rid, 'depot_id' => $depotId, 'user_id' => $userId, 'status' => 'open']]);
         exit;
     }
-    // Seller rounds: assign products to round (admin/gerant)
-    if (preg_match('#^/api/v1/seller-rounds/(\d+)/assign$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    // -------------------------------------------------------------
+    // Close seller round (PATCH /api/v1/seller-rounds/{id})
+    // -------------------------------------------------------------
+    if (
+        preg_match('#^/api/v1/seller-rounds/(\d+)$#', $path, $m) &&
+        ($_SERVER['REQUEST_METHOD'] === 'PATCH' ||
+            ($_SERVER['REQUEST_METHOD'] === 'POST' && (($_POST['_method'] ?? '') === 'PATCH')))
+    ) {
+
         $auth = requireAuth();
-        requireRole($auth, ['admin', 'gerant']);
         ensure_seller_rounds_tables();
+
         $rid = (int)$m[1];
-        $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
-        $pid = (int)($data['product_id'] ?? 0);
-        $qty = (int)($data['quantity'] ?? 0);
-        if ($pid <= 0 || $qty <= 0) {
-            http_response_code(422);
-            echo json_encode(['error' => 'product_id et quantity requis']);
-            exit;
-        }
-        $round = DB::query('SELECT * FROM seller_rounds WHERE id=:id AND status=\'open\' LIMIT 1', [':id' => $rid])[0] ?? null;
+
+        // Charger la tournée réelle
+        $round = DB::query(
+            'SELECT * FROM seller_rounds WHERE id = :id LIMIT 1',
+            [':id' => $rid]
+        )[0] ?? null;
+
         if (!$round) {
             http_response_code(404);
-            echo json_encode(['error' => 'Round not found or closed']);
+            echo json_encode(['error' => 'NOT_FOUND']);
             exit;
         }
-        // Gerant limité à son dépôt
-        if (($auth['role'] ?? '') === 'gerant' && (int)($auth['depot_id'] ?? 0) !== (int)$round['depot_id']) {
+
+        // Permissions
+        $role = $auth['role'] ?? '';
+        if (
+            !in_array($role, ['admin', 'gerant'], true) &&
+            (int)$auth['id'] !== (int)$round['user_id']
+        ) {
             http_response_code(403);
-            echo json_encode(['error' => 'Forbidden depot']);
+            echo json_encode(['error' => 'FORBIDDEN']);
             exit;
         }
-        // Vérifier stock du dépôt
-        $available = Stock::available((int)$round['depot_id'], $pid);
-        if ($available < $qty) {
-            http_response_code(422);
-            echo json_encode(['error' => 'INSUFFICIENT_STOCK', 'available' => $available]);
+
+        // Déjà fermée ?
+        if ($round['status'] === 'closed') {
+            http_response_code(409);
+            echo json_encode(['error' => 'ALREADY_CLOSED']);
             exit;
         }
-        // Upsert round item
-        $exists = DB::query('SELECT qty_assigned FROM seller_round_items WHERE round_id=:r AND product_id=:p', [':r' => $rid, ':p' => $pid])[0] ?? null;
-        if ($exists) {
-            DB::execute('UPDATE seller_round_items SET qty_assigned = qty_assigned + :q WHERE round_id=:r AND product_id=:p', [':q' => $qty, ':r' => $rid, ':p' => $pid]);
-        } else {
-            DB::execute('INSERT INTO seller_round_items(round_id,product_id,qty_assigned,qty_returned) VALUES(:r,:p,:q,0)', [':r' => $rid, ':p' => $pid, ':q' => $qty]);
-        }
-        // Impacter le stock du dépôt à la remise
-        (new StockMovement())->move((int)$round['depot_id'], $pid, 'out', $qty, date('Y-m-d H:i:s'), null, 'round_assign');
-        Stock::adjust((int)$round['depot_id'], $pid, 'out', $qty);
-        echo json_encode(['assigned' => true]);
+
+        // Lire corps JSON
+        $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
+
+        $cashTurnedIn = (int)($data['cash_turned_in'] ?? 0);
+
+        // Clôture
+        DB::query(
+            'UPDATE seller_rounds SET status="closed", cash_turned_in=:amt, closed_at=NOW() WHERE id=:id',
+            [
+                ':amt' => $cashTurnedIn,
+                ':id'  => $rid
+            ]
+        );
+
+        echo json_encode([
+            'success' => true,
+            'id' => $rid,
+            'cash_turned_in' => $cashTurnedIn,
+            'closed_at' => date('Y-m-d H:i:s'),
+        ]);
         exit;
     }
+
     // Seller rounds: return quantities (admin/gerant)
     if (preg_match('#^/api/v1/seller-rounds/(\d+)/return$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
         $auth = requireAuth();
@@ -3616,7 +3637,10 @@ if (str_starts_with($path, '/api/v1')) {
         exit;
     }
     // Close seller round (returns + cash turned in)
-    if (preg_match('#^/api/v1/seller-rounds/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
+    if (preg_match('#^/api/v1/seller-rounds/(\d+)$#', $path, $m) && (
+        $_SERVER['REQUEST_METHOD'] === 'PATCH' ||
+        ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['_method'] ?? '') === 'PATCH')
+    )) {
         $auth = requireAuth();
         ensure_seller_rounds_tables();
         $rid = (int)$m[1];
@@ -3723,6 +3747,16 @@ if (str_starts_with($path, '/api/v1')) {
             exit;
         }
         DB::execute('UPDATE seller_rounds SET status="closed", cash_turned_in=:c, notes=:n, closed_at=NOW() WHERE id=:id', [':c' => $cash, ':n' => $notes, ':id' => $rid]);
+        // Mise à jour du solde client (balance_cached) pour tous les clients concernés
+        $clientIds = DB::query('SELECT DISTINCT client_id FROM sales WHERE seller_round_id = :rid', [':rid' => $rid]);
+        foreach ($clientIds as $row) {
+            $cid = (int)$row['client_id'];
+            DB::execute('UPDATE clients SET balance_cached = COALESCE((SELECT SUM(s.total_amount) - SUM(s.amount_paid) FROM sales s WHERE s.client_id = :c),0) WHERE id = :c', [':c' => $cid]);
+        }
+        // Mise à jour du solde livreur (seller_balance)
+        $userId = (int)$round['user_id'];
+        $netDue = (int)(DB::query('SELECT COALESCE(SUM(total_amount - amount_paid),0) v FROM sales WHERE seller_round_id = :rid', [':rid' => $rid])[0]['v'] ?? 0);
+        DB::execute('UPDATE users SET seller_balance = COALESCE(seller_balance,0) - :delta WHERE id = :uid', [':delta' => $netDue, ':uid' => $userId]);
         try {
             audit_log((int)$auth['id'], 'modify', 'seller_rounds', $rid, $path, 'PATCH', ['cash' => $cash, 'returns' => $appliedMeta]);
         } catch (\Throwable $e) {
