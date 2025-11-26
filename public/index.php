@@ -3593,20 +3593,8 @@ if (str_starts_with($path, '/api/v1')) {
             $totalReturned += $returned;
             $totalSold += $sold;
         }
-        // Amount totals in round window
-        $paramsWin = [':u' => (int)$round['user_id'], ':d' => (int)$round['depot_id'], ':from' => $round['assigned_at']];
-        $whereTo = '';
-        if (!empty($round['closed_at'])) {
-            $whereTo = ' AND s.sold_at <= :to';
-            $paramsWin[':to'] = $round['closed_at'];
-        }
-        $salesAmount = (int)(DB::query('SELECT COALESCE(SUM(s.total_amount),0) v FROM sales s WHERE s.user_id=:u AND s.depot_id=:d AND s.sold_at >= :from' . $whereTo, $paramsWin)[0]['v'] ?? 0);
-        // Correction : le cash remis doit inclure tous les paiements liés aux ventes de la tournée, peu importe la date du paiement
-        $paymentsAmount = (int)(DB::query('SELECT COALESCE(SUM(sp.amount),0) v FROM sale_payments sp JOIN sales s ON s.id=sp.sale_id WHERE s.user_id=:u AND s.depot_id=:d AND s.sold_at >= :from' . $whereTo, $paramsWin)[0]['v'] ?? 0);
-        // Nouvelle version : inclure tous les paiements liés aux ventes de la tournée, même si le paiement a été fait après la vente
-        $paymentsAmountAll = (int)(DB::query('SELECT COALESCE(SUM(sp.amount),0) v FROM sale_payments sp WHERE sp.sale_id IN (SELECT s.id FROM sales s WHERE s.user_id=:u AND s.depot_id=:d AND s.sold_at >= :from' . $whereTo . ')', $paramsWin)[0]['v'] ?? 0);
-        // On expose les deux pour analyse front
-        $creditAmount = max(0, $salesAmount - $paymentsAmountAll);
+        // Totaux basés sur seller_round_id
+        $row = DB::query('SELECT COALESCE(SUM(total_amount),0) AS sales_amount, COALESCE(SUM(amount_paid),0) AS payments_amount, COALESCE(SUM(total_amount - amount_paid),0) AS credit_amount FROM sales WHERE seller_round_id = :rid', [':rid' => $rid])[0] ?? ['sales_amount' => 0, 'payments_amount' => 0, 'credit_amount' => 0];
         echo json_encode([
             'round_id' => $rid,
             'status' => $round['status'],
@@ -3620,9 +3608,9 @@ if (str_starts_with($path, '/api/v1')) {
                 'sold_qty' => $totalSold,
                 'returned_qty' => $totalReturned,
                 'remaining_qty' => max(0, $totalAssigned - $totalSold - $totalReturned),
-                'sales_amount' => $salesAmount,
-                'payments_amount' => $paymentsAmountAll,
-                'credit_amount' => $creditAmount
+                'sales_amount' => (int)$row['sales_amount'],
+                'payments_amount' => (int)$row['payments_amount'],
+                'credit_amount' => (int)$row['credit_amount']
             ]
         ]);
         exit;
