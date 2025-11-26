@@ -203,6 +203,7 @@
     const url =
       BASE +
       `/api/v1/receivables/route-plan?format=${fmt}${dep}${usr}${f}${t}${tk}`;
+    console.log("Export URL:", url);
     window.open(url, "_blank");
   }
 

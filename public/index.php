@@ -1611,7 +1611,19 @@ if (str_starts_with($path, '/api/v1')) {
             $where[] = 's.user_id = :me';
             $p[':me'] = $uid;
         }
-        $sql = 'SELECT c.id AS client_id, c.name AS client_name, c.phone, c.address, c.latitude, c.longitude, c.depot_id,(SUM(s.total_amount)-SUM(s.amount_paid)) AS balance, SUM(s.total_amount) AS total, SUM(s.amount_paid) AS paid, MAX(s.sold_at) AS last_sale,(SELECT MAX(sp.paid_at) FROM sale_payments sp JOIN sales sx ON sx.id=sp.sale_id WHERE sx.client_id=c.id' + ($userId ? ' AND sx.user_id = :user' : '') + ') AS last_payment FROM sales s JOIN clients c ON c.id=s.client_id';
+        $sql = 'SELECT c.id AS client_id, c.name AS client_name, c.phone, c.address, c.latitude, c.longitude, c.depot_id,
+        (SUM(s.total_amount)-SUM(s.amount_paid)) AS balance,
+        SUM(s.total_amount) AS total,
+        SUM(s.amount_paid) AS paid,
+        MAX(s.sold_at) AS last_sale,
+        (SELECT MAX(sp.paid_at)
+            FROM sale_payments sp
+            JOIN sales sx ON sx.id = sp.sale_id
+            WHERE sx.client_id = c.id'
+            . ($userId ? ' AND sx.user_id = :user' : '')
+            . ') AS last_payment
+        FROM sales s
+        JOIN clients c ON c.id = s.client_id';
         if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
         $sql .= ' GROUP BY c.id,c.name,c.phone,c.address,c.latitude,c.longitude,c.depot_id HAVING (SUM(s.total_amount)-SUM(s.amount_paid)) > 0';
         $rows = DB::query($sql, $p);
