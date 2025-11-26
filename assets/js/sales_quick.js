@@ -1,5 +1,6 @@
 (function () {
   const BASE = window.APP_BASE || "";
+
   function getCookie(name) {
     const parts = ("; " + document.cookie).split("; " + name + "=");
     if (parts.length === 2) return parts.pop().split(";").shift();
@@ -380,6 +381,8 @@
       const body = {
         depot_id: depotId,
         client_id: selectedClient.id,
+        seller_round_id:
+          currentRound && currentRound.id ? currentRound.id : null,
         items: cart.map((it) => ({
           product_id: it.product_id,
           quantity: it.quantity,
@@ -387,6 +390,7 @@
         })),
         payment_amount: paid,
       };
+      console.log("Submitting sale", body);
       try {
         const r = await fetch(BASE + "/api/v1/sales", {
           method: "POST",
@@ -395,6 +399,7 @@
         });
         if (!r.ok) {
           const errText = await r.text();
+          console.error("Erreur API vente:", errText); // Ajout log explicite
           window.showToast &&
             window.showToast("error", "Vente échouée: " + errText);
           return;

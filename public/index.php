@@ -1054,10 +1054,21 @@ if (str_starts_with($path, '/api/v1')) {
     }
     // Create sale with items + optional payment
     if ($path === '/api/v1/sales' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+
         $auth = requireAuth();
         $role = (string)($auth['role'] ?? '');
         $userDepotId = (int)($auth['depot_id'] ?? 0);
+
+        // Charger le JSON avant toute validation
         $data = json_decode(file_get_contents('php://input'), true) ?: $_POST;
+
+        // Vérifier que seller_round_id est bien présent et non null
+        if (!isset($data['seller_round_id']) || (int)$data['seller_round_id'] <= 0) {
+            http_response_code(422);
+            echo json_encode(['error' => 'SELLER_ROUND_ID_REQUIRED']);
+            exit;
+        }
+
         $items = $data['items'] ?? [];
         if (!$items) {
             http_response_code(422);
@@ -1172,6 +1183,7 @@ if (str_starts_with($path, '/api/v1')) {
             'client_id' => (int)$data['client_id'],
             'user_id' => (int)$auth['id'],
             'depot_id' => $depotId,
+            'seller_round_id' => isset($data['seller_round_id']) ? (int)$data['seller_round_id'] : null,
             'total_amount' => $total,
             'amount_paid' => 0,
             'status' => 'pending',
@@ -3589,8 +3601,12 @@ if (str_starts_with($path, '/api/v1')) {
             $paramsWin[':to'] = $round['closed_at'];
         }
         $salesAmount = (int)(DB::query('SELECT COALESCE(SUM(s.total_amount),0) v FROM sales s WHERE s.user_id=:u AND s.depot_id=:d AND s.sold_at >= :from' . $whereTo, $paramsWin)[0]['v'] ?? 0);
+        // Correction : le cash remis doit inclure tous les paiements liés aux ventes de la tournée, peu importe la date du paiement
         $paymentsAmount = (int)(DB::query('SELECT COALESCE(SUM(sp.amount),0) v FROM sale_payments sp JOIN sales s ON s.id=sp.sale_id WHERE s.user_id=:u AND s.depot_id=:d AND s.sold_at >= :from' . $whereTo, $paramsWin)[0]['v'] ?? 0);
-        $creditAmount = max(0, $salesAmount - $paymentsAmount);
+        // Nouvelle version : inclure tous les paiements liés aux ventes de la tournée, même si le paiement a été fait après la vente
+        $paymentsAmountAll = (int)(DB::query('SELECT COALESCE(SUM(sp.amount),0) v FROM sale_payments sp WHERE sp.sale_id IN (SELECT s.id FROM sales s WHERE s.user_id=:u AND s.depot_id=:d AND s.sold_at >= :from' . $whereTo . ')', $paramsWin)[0]['v'] ?? 0);
+        // On expose les deux pour analyse front
+        $creditAmount = max(0, $salesAmount - $paymentsAmountAll);
         echo json_encode([
             'round_id' => $rid,
             'status' => $round['status'],
@@ -3605,7 +3621,7 @@ if (str_starts_with($path, '/api/v1')) {
                 'returned_qty' => $totalReturned,
                 'remaining_qty' => max(0, $totalAssigned - $totalSold - $totalReturned),
                 'sales_amount' => $salesAmount,
-                'payments_amount' => $paymentsAmount,
+                'payments_amount' => $paymentsAmountAll,
                 'credit_amount' => $creditAmount
             ]
         ]);
