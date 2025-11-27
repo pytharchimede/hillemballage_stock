@@ -271,22 +271,28 @@
       }, {});
       products = assigned
         .map((it) => {
-          const full = depotProducts.find((p) => p.id === it.product_id) || {};
+          const full =
+            depotProducts.find((p) => Number(p.id) === Number(it.product_id)) ||
+            {};
           const st = statItems[it.product_id] || {};
+
           const remaining =
             st.qty_remaining != null ? st.qty_remaining : it.qty_assigned || 0;
+
           return {
-            id: it.product_id,
-            name: it.name || full.name || "#" + it.product_id,
-            unit_price: full.unit_price || 0,
-            stock_depot: remaining,
-            stock_total: remaining,
-            qty_assigned: st.qty_assigned || it.qty_assigned || 0,
-            qty_sold: st.qty_sold || 0,
-            qty_returned: st.qty_returned || 0,
+            id: Number(it.product_id),
+            product_id: Number(it.product_id),
+            name: String(it.name || full.name || "#" + it.product_id),
+            unit_price: Number(full.unit_price || 0),
+            stock_depot: Number(remaining),
+            stock_total: Number(remaining),
+            qty_assigned: Number(st.qty_assigned || it.qty_assigned || 0),
+            qty_sold: Number(st.qty_sold || 0),
+            qty_returned: Number(st.qty_returned || 0),
           };
         })
         .filter((p) => p.stock_depot > 0);
+
       if (!products.length) {
         elProducts.innerHTML =
           '<div class="muted">Aucun produit attribué</div>';
@@ -475,6 +481,8 @@
   }
 
   function openClientModal() {
+    document.querySelectorAll(".modal").forEach((m) => m.remove());
+
     const dlg = document.createElement("div");
     dlg.className = "modal";
     dlg.innerHTML = `<div class="modal-content">
