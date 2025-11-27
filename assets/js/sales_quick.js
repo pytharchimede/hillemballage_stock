@@ -555,26 +555,39 @@
       });
       h += "</div>";
       elList.innerHTML = h;
-      elList.querySelectorAll("[data-c]").forEach((btn) =>
+      elList.querySelectorAll("[data-c]").forEach((btn) => {
         btn.addEventListener("click", () => {
-          const id = parseInt(btn.getAttribute("data-c"), 10);
-          const cli = clients.find((x) => x.id === id);
-          if (cli) {
-            selectedClient = {
-              id: cli.id,
-              name: cli.name,
-              phone: cli.phone || "",
-              balance: typeof cli.balance === "number" ? cli.balance : 0,
-            };
-            renderSelectedClient();
-            dlg.remove();
+          const raw = btn.getAttribute("data-c");
+          const id = raw != null ? Number(raw) : null;
+          const cli = clients.find((x) => String(x.id) === String(id));
+          console.debug("[sales_quick] Click client", {
+            raw,
+            id,
+            found: !!cli,
+          });
+          if (!cli) {
+            window.showToast && window.showToast("error", "Client introuvable");
+            return;
           }
-        })
-      );
+          selectedClient = {
+            id: cli.id,
+            name: cli.name,
+            phone: cli.phone || "",
+            balance: typeof cli.balance === "number" ? cli.balance : 0,
+          };
+          renderSelectedClient();
+          updateHint && updateHint();
+          loadClientStats && loadClientStats();
+          dlg.remove();
+        });
+      });
     }
 
     fetchClients().then((rows) => {
-      clients = rows || [];
+      clients = (rows || []).map((c) => ({
+        ...c,
+        id: c && c.id != null ? Number(c.id) : c.id,
+      }));
       renderList(clients);
     });
 
