@@ -103,7 +103,7 @@
     updateHint(t);
     return t;
   }
-
+  // Rétabli: affichage des hints en fonction du total et du solde client
   function updateHint(totalVal) {
     if (!elHint) return;
     const t =
@@ -120,8 +120,9 @@
       bal
     )} • Reste à payer: ${formatFCFA(remaining)}`;
   }
-
+  // Fin computeTotal
   function renderCart() {
+    if (!elCart) return;
     if (!cart.length) {
       elCart.innerHTML = '<div class="muted">Aucun article</div>';
       computeTotal();
@@ -147,6 +148,7 @@
     });
     h += "</tbody></table>";
     elCart.innerHTML = h;
+    // Incrément
     elCart.querySelectorAll("[data-inc]").forEach((b) =>
       b.addEventListener("click", () => {
         const i = parseInt(b.getAttribute("data-inc"), 10);
@@ -163,6 +165,7 @@
         computeTotal();
       })
     );
+    // Décrément
     elCart.querySelectorAll("[data-dec]").forEach((b) =>
       b.addEventListener("click", () => {
         const i = parseInt(b.getAttribute("data-dec"), 10);
@@ -173,6 +176,7 @@
         computeTotal();
       })
     );
+    // Retirer
     elCart.querySelectorAll("[data-rm]").forEach((b) =>
       b.addEventListener("click", () => {
         const i = parseInt(b.getAttribute("data-rm"), 10);
@@ -205,11 +209,18 @@
     });
     h += "</div>";
     elProducts.innerHTML = h;
+    // Binding direct, simple
     elProducts.querySelectorAll("[data-p]").forEach((btn) =>
       btn.addEventListener("click", () => {
         const pid = parseInt(btn.getAttribute("data-p"), 10);
-        const prod = products.find((x) => x.id === pid);
-        if (!prod) return;
+        console.debug("[sales_quick] Clic produit", { pid, products });
+        const prod = products.find((x) => Number(x.id) === pid);
+        if (!prod) {
+          console.debug("[sales_quick] Produit non trouvé (renderProducts)", {
+            pid,
+          });
+          return;
+        }
         const stock = prod.stock_depot ?? prod.stock_total ?? 0;
         const existing = cart.find((c) => c.product_id === pid);
         const nextQty = (existing ? existing.quantity : 0) + 1;
@@ -255,11 +266,9 @@
       console.log("Tournées ouvertes:", rounds);
       // 3. Filtrer la tournée du livreur
       // const myRounds = (rounds || []).filter((r) => r.user_id === userId);
-      // ...existing code...
       const myRounds = (rounds || []).filter(
         (r) => String(r.user_id) === String(userId)
       );
-      // ...existing code...
       if (!myRounds.length) {
         elProducts.innerHTML =
           '<div class="muted">Aucune tournée ouverte pour vous</div>';
@@ -302,7 +311,7 @@
           const qtySold = Number(st.qty_sold || 0);
           const stockDepot = qtyAssigned - qtySold;
           return {
-            id: it.product_id,
+            id: Number(it.product_id),
             name: full.name || it.product_name || "Produit #" + it.product_id,
             sku: full.sku || "",
             unit_price: Number(full.unit_price || it.unit_price || 0),
@@ -314,6 +323,8 @@
           };
         })
         .filter((p) => p.stock_depot > 0);
+
+      console.debug("[sales_quick] products chargés", products);
 
       if (!products.length) {
         elProducts.innerHTML =
