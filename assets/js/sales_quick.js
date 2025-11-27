@@ -231,7 +231,12 @@
       const rounds = roundsResp.ok ? await roundsResp.json() : [];
       console.log("Tournées ouvertes:", rounds);
       // 3. Filtrer la tournée du livreur
-      const myRounds = (rounds || []).filter((r) => r.user_id === userId);
+      // const myRounds = (rounds || []).filter((r) => r.user_id === userId);
+      // ...existing code...
+      const myRounds = (rounds || []).filter(
+        (r) => String(r.user_id) === String(userId)
+      );
+      // ...existing code...
       if (!myRounds.length) {
         elProducts.innerHTML =
           '<div class="muted">Aucune tournée ouverte pour vous</div>';
