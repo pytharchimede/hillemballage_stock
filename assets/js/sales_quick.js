@@ -1,5 +1,13 @@
 (function () {
-  const BASE = window.API_BASE || "";
+  // Détermination robuste de la base API (évite inline script bloqué par CSP en prod)
+  const metaBase = (
+    document.querySelector('meta[name="app-base"]')?.content || ""
+  ).trim();
+  const rawBase = (window.API_BASE || metaBase || "").trim();
+  const BASE = rawBase.replace(/\/$/, "");
+  try {
+    console.debug("[sales_quick] BASE API:", BASE);
+  } catch (_) {}
 
   function getCookie(name) {
     const parts = ("; " + document.cookie).split("; " + name + "=");
@@ -50,11 +58,26 @@
       elClientSelected.textContent = label;
       elClientSelected.classList.remove("muted");
       elClientSelected.style.fontWeight = "600";
+      // Mettre à jour le bouton d'ouverture pour refléter la sélection
+      if (elClientOpen) {
+        elClientOpen.textContent = `Changer (${
+          selectedClient.name || "Client"
+        })`;
+      }
+      // Surlignage bref pour feedback visuel
+      const prevBg = elClientSelected.style.backgroundColor;
+      elClientSelected.style.backgroundColor = "#e6ffed";
+      setTimeout(() => {
+        elClientSelected.style.backgroundColor = prevBg || "";
+      }, 900);
       loadClientStats();
     } else {
       elClientSelected.textContent = "Aucun client sélectionné";
       elClientSelected.classList.add("muted");
       elClientSelected.style.fontWeight = "";
+      if (elClientOpen) {
+        elClientOpen.textContent = "Sélectionner / Créer";
+      }
       if (elClientStats) elClientStats.textContent = "";
     }
   }
@@ -272,23 +295,22 @@
       products = assigned
         .map((it) => {
           const full =
-            depotProducts.find((p) => Number(p.id) === Number(it.product_id)) ||
+            depotProducts.find((p) => String(p.id) === String(it.product_id)) ||
             {};
           const st = statItems[it.product_id] || {};
-
-          const remaining =
-            st.qty_remaining != null ? st.qty_remaining : it.qty_assigned || 0;
-
+          const qtyAssigned = Number(it.qty_assigned || 0);
+          const qtySold = Number(st.qty_sold || 0);
+          const stockDepot = qtyAssigned - qtySold;
           return {
-            id: Number(it.product_id),
-            product_id: Number(it.product_id),
-            name: String(it.name || full.name || "#" + it.product_id),
-            unit_price: Number(full.unit_price || 0),
-            stock_depot: Number(remaining),
-            stock_total: Number(remaining),
-            qty_assigned: Number(st.qty_assigned || it.qty_assigned || 0),
-            qty_sold: Number(st.qty_sold || 0),
+            id: it.product_id,
+            name: full.name || it.product_name || "Produit #" + it.product_id,
+            sku: full.sku || "",
+            unit_price: Number(full.unit_price || it.unit_price || 0),
+            cost_price: Number(full.cost_price || 0),
+            qty_assigned: qtyAssigned,
+            qty_sold: qtySold,
             qty_returned: Number(st.qty_returned || 0),
+            stock_depot: stockDepot,
           };
         })
         .filter((p) => p.stock_depot > 0);
@@ -598,11 +620,43 @@
     });
   }
 
-  if (elClientOpen) {
-    elClientOpen.addEventListener("click", (e) => {
-      e.preventDefault();
-      openClientModal();
+  // Attacher le clic de manière robuste (délégation)
+  function bindClientOpen() {
+    if (elClientOpen) {
+      elClientOpen.style.cursor = "pointer";
+    }
+    document.addEventListener("click", (e) => {
+      const tgt = e.target;
+      if (!tgt) return;
+      // Bouton direct ou icône à l'intérieur
+      const isBtn =
+        tgt.id === "sq-client-open" ||
+        (tgt.closest && tgt.closest("#sq-client-open"));
+      if (isBtn) {
+        e.preventDefault();
+        try {
+          openClientModal();
+        } catch (_) {
+          // no-op
+        }
+      }
     });
+    // Raccourci clavier pour ouvrir la sélection client
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "F2") {
+        e.preventDefault();
+        try {
+          openClientModal();
+        } catch (_) {
+          /* no-op */
+        }
+      }
+    });
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bindClientOpen);
+  } else {
+    bindClientOpen();
   }
 
   function renderRoundInfo() {
