@@ -1,6 +1,9 @@
 (() => {
   const BASE = window.APP_BASE || "/hill_new/public";
 
+  // ---------------------------
+  // Helpers
+  // ---------------------------
   function getCookie(name) {
     const parts = ("; " + document.cookie).split("; " + name + "=");
     if (parts.length === 2) return parts.pop().split(";").shift();
@@ -13,6 +16,7 @@
     threshold: document.getElementById("threshold-select"),
   };
 
+  // Visibility
   function applyVisibility(v) {
     const toggle = (id, show) => {
       const el = document.getElementById(id);
@@ -33,6 +37,17 @@
     toggle("quick-actions", v.role === "livreur" || !!(v.sales || v.clients));
   }
 
+  // ---------------------------
+  // Chart instances
+  // ---------------------------
+  let chartRevenue30 = null;
+  let chartTopProducts = null;
+  let chartOrdersStatus = null;
+  let chartByUser = null;
+
+  // ---------------------------
+  // Fetch API
+  // ---------------------------
   async function fetchSummary() {
     const token = (
       localStorage.getItem("api_token") ||
@@ -76,7 +91,7 @@
     // Top client balances
     renderBalances(data.top_balances || []);
 
-    // Daily sales (tu peux adapter pour ton tableau)
+    // Daily sales
     if (data.daily?.rows && data.daily?.total_montant !== undefined) {
       renderDaily(data.daily.rows, data.daily.total_montant);
     }
@@ -87,6 +102,9 @@
       rh.textContent = `Rôle: ${data.visibility.role}`;
   }
 
+  // ---------------------------
+  // Renderers
+  // ---------------------------
   function renderQuickStats(q, stockTotal) {
     if (!q) return;
     document.getElementById("qs-ca").textContent = q.ca_today ?? "—";
@@ -124,7 +142,8 @@
   function renderRevenue30(points) {
     const el = document.getElementById("chartRevenue30");
     if (!el || !window.Chart) return;
-    new Chart(el.getContext("2d"), {
+    if (chartRevenue30) chartRevenue30.destroy();
+    chartRevenue30 = new Chart(el.getContext("2d"), {
       type: "line",
       data: {
         labels: points.map((p) => p.date),
@@ -149,7 +168,8 @@
   function renderTopProducts(rows) {
     const el = document.getElementById("chartTopProducts");
     if (!el || !window.Chart) return;
-    new Chart(el.getContext("2d"), {
+    if (chartTopProducts) chartTopProducts.destroy();
+    chartTopProducts = new Chart(el.getContext("2d"), {
       type: "bar",
       data: {
         labels: rows.map((r) => r.name),
@@ -173,9 +193,9 @@
       return;
     }
     let html = `<table class="excel"><thead><tr><th>Produit</th><th>Stock</th></tr></thead><tbody>`;
-    rows.forEach((r) => {
-      html += `<tr><td>${r.name}</td><td>${r.qty}</td></tr>`;
-    });
+    rows.forEach(
+      (r) => (html += `<tr><td>${r.name}</td><td>${r.qty}</td></tr>`)
+    );
     html += "</tbody></table>";
     c.innerHTML = html;
     if (threshold)
@@ -192,12 +212,13 @@
       return;
     }
     let html = `<table class="table compact" style="width:100%"><thead><tr><th>Client</th><th>Solde dû</th></tr></thead><tbody>`;
-    data.forEach((b) => {
-      html += `<tr><td>${b.name}</td><td style="text-align:right">${parseInt(
-        b.balance,
-        10
-      ).toLocaleString()} FCFA</td></tr>`;
-    });
+    data.forEach(
+      (b) =>
+        (html += `<tr><td>${b.name}</td><td style="text-align:right">${parseInt(
+          b.balance,
+          10
+        ).toLocaleString()} FCFA</td></tr>`)
+    );
     html += "</tbody></table>";
     el.innerHTML = html;
   }
@@ -219,7 +240,9 @@
     c.innerHTML = html;
   }
 
-  // Refresh button
+  // ---------------------------
+  // Event listeners
+  // ---------------------------
   const btn = document.getElementById("btn-refresh");
   if (btn) btn.addEventListener("click", fetchSummary);
 
@@ -227,5 +250,6 @@
   if (els.depot) els.depot.addEventListener("change", fetchSummary);
   if (els.threshold) els.threshold.addEventListener("change", fetchSummary);
 
+  // Initial fetch
   fetchSummary();
 })();
