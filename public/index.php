@@ -3644,6 +3644,17 @@ if (str_starts_with($path, '/api/v1')) {
             echo json_encode(['error' => 'CASH_MISMATCH', 'details' => ['cash_turned_in' => (int)$cash, 'expected' => (int)$sumPayments]]);
             exit;
         }
+        // Réinjection de toutes les quantités retournées dans le stock du dépôt
+        $depotId = (int)$round['depot_id'];
+        $roundItems = DB::query('SELECT product_id, qty_returned FROM seller_round_items WHERE round_id = :rid', [':rid' => $rid]);
+        foreach ($roundItems as $it) {
+            $pid = (int)$it['product_id'];
+            $qtyReturned = (int)$it['qty_returned'];
+            if ($pid > 0 && $qtyReturned > 0) {
+                // Utilise le helper centralisé pour ajuster les stocks
+                selfAdjustStock($depotId, $pid, 'return', $qtyReturned);
+            }
+        }
         DB::execute('UPDATE seller_rounds SET status="closed", cash_turned_in=:c, notes=:n, closed_at=NOW() WHERE id=:id', [':c' => $cash, ':n' => $notes, ':id' => $rid]);
         // Mise à jour du solde client (balance_cached) pour tous les clients concernés
         $clientIds = DB::query('SELECT DISTINCT client_id FROM sales WHERE seller_round_id = :rid', [':rid' => $rid]);
