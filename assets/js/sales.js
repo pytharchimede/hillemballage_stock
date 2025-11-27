@@ -1,4 +1,6 @@
 (() => {
+  const BASE = window.API_BASE || ""; // <<< Correction clé
+
   function getCookie(name) {
     const parts = ("; " + document.cookie).split("; " + name + "=");
     if (parts.length === 2) return parts.pop().split(";").shift();
@@ -24,7 +26,9 @@
 
   async function loadClients() {
     try {
-      const r = await fetch("/api/v1/clients", { headers: authHeaders() });
+      const r = await fetch(BASE + "/api/v1/clients", {
+        headers: authHeaders(),
+      });
       if (!r.ok) return;
       const rows = await r.json();
       if (!Array.isArray(rows)) return;
@@ -52,9 +56,12 @@
     els.table.textContent = "Chargement...";
     try {
       const query = buildQuery();
-      const r = await fetch("/api/v1/sales" + (query ? "?" + query : ""), {
-        headers: authHeaders(),
-      });
+      const r = await fetch(
+        BASE + "/api/v1/sales" + (query ? "?" + query : ""),
+        {
+          headers: authHeaders(),
+        }
+      );
       if (!r.ok) {
         els.table.innerHTML =
           '<div class="muted">Aucune donnée ou accès refusé</div>';

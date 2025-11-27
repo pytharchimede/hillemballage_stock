@@ -62,5 +62,11 @@
 <?php
 $scriptDir = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'])), '/');
 $assetBase = preg_replace('#/public$#', '', $scriptDir);
+// Correction : inclure /public dans API_BASE
+$apiBase = $assetBase . '/public';
 ?>
+<script>
+    window.API_BASE = "<?= addslashes($apiBase) ?>";
+</script>
+
 <script src="<?= $assetBase ?>/assets/js/sales_quick.js"></script>

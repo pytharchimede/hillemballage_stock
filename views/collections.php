@@ -37,11 +37,11 @@
 <?php
 $scriptDir = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'])), '/');
 $assetBase = preg_replace('#/public$#', '', $scriptDir);
+// Correction : inclure /public dans API_BASE
+$apiBase = $assetBase . '/public';
 ?>
-
 <script>
-    // SANS inline JS, compatible CSP
-    window.API_BASE = "/hill_new/public";
+    window.API_BASE = "<?= addslashes($apiBase) ?>";
 </script>
 
 

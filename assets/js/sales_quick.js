@@ -1,5 +1,5 @@
 (function () {
-  const BASE = window.APP_BASE || "";
+  const BASE = window.API_BASE || "";
 
   function getCookie(name) {
     const parts = ("; " + document.cookie).split("; " + name + "=");
@@ -229,6 +229,7 @@
         }
       );
       const rounds = roundsResp.ok ? await roundsResp.json() : [];
+      console.log("Tournées ouvertes:", rounds);
       // 3. Filtrer la tournée du livreur
       const myRounds = (rounds || []).filter((r) => r.user_id === userId);
       if (!myRounds.length) {
