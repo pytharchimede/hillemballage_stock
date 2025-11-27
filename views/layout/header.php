@@ -14,9 +14,9 @@
     <meta name="app-base" content="<?= htmlspecialchars($routeBase) ?>">
     <style>
         /* Masquer les liens sensibles avant calcul des permissions (évite le flash) */
-        #mainNav a[data-entity] {
+        /* #mainNav a[data-entity] {
             display: none;
-        }
+        } */
     </style>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 </head>
