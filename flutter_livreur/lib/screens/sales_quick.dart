@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../api.dart';
 import 'package:intl/intl.dart';
+import '../widgets/app_scaffold.dart';
 
 class SalesQuickScreen extends StatefulWidget {
   const SalesQuickScreen({super.key});
@@ -16,13 +17,26 @@ class _SalesQuickScreenState extends State<SalesQuickScreen> {
   int paid = 0;
   Map<String, dynamic>? selectedClient;
   int? clientBalance;
+  bool _authChecked = false;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     round ??=
         (ModalRoute.of(context)?.settings.arguments as Map<String, dynamic>?);
-    _load();
+    _ensureAuthThenLoad();
+  }
+
+  Future<void> _ensureAuthThenLoad() async {
+    if (_authChecked) return;
+    _authChecked = true;
+    final me = await Api.me();
+    if (me == null) {
+      if (!mounted) return;
+      Navigator.of(context).pushNamedAndRemoveUntil('/login', (r) => false);
+      return;
+    }
+    await _load();
   }
 
   Future<void> _load() async {
@@ -239,10 +253,9 @@ class _SalesQuickScreenState extends State<SalesQuickScreen> {
                     width: double.infinity,
                     child: ElevatedButton(
                       onPressed: () async {
-                        final messenger = ScaffoldMessenger.of(context);
                         final n = nameCtrl.text.trim();
                         if (n.isEmpty) {
-                          messenger.showSnackBar(
+                          ScaffoldMessenger.of(ctx).showSnackBar(
                             const SnackBar(content: Text('Nom requis')),
                           );
                           return;
@@ -269,7 +282,7 @@ class _SalesQuickScreenState extends State<SalesQuickScreen> {
                           }
                         } else {
                           if (!mounted) return;
-                          messenger.showSnackBar(
+                          ScaffoldMessenger.of(ctx).showSnackBar(
                             const SnackBar(
                                 content: Text('Échec création client')),
                           );
@@ -291,8 +304,9 @@ class _SalesQuickScreenState extends State<SalesQuickScreen> {
   @override
   Widget build(BuildContext context) {
     final fmt = NumberFormat.decimalPattern('fr_FR');
-    return Scaffold(
-      appBar: AppBar(title: const Text('Vente rapide')),
+    return AppScaffold(
+      title: 'Vente rapide',
+      currentRoute: '/sales_quick',
       body: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(

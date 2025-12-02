@@ -32,6 +32,15 @@ class Api {
     await sp.setString('api_token', t);
   }
 
+  static Future<void> clearToken() async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.remove('api_token');
+  }
+
+  static Future<void> logout() async {
+    await clearToken();
+  }
+
   static Future<Map<String, String>> _headers({bool json = true}) async {
     final tok = await getToken();
     final h = <String, String>{};

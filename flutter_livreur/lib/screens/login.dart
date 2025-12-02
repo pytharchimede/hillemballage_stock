@@ -56,7 +56,19 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Connexion livreur'),
+        title: Row(children: [
+          SizedBox(
+            width: 28,
+            height: 28,
+            child: Image.asset(
+              'assets/images/logo.png',
+              errorBuilder: (c, e, s) => const Icon(Icons.store, size: 22),
+              fit: BoxFit.contain,
+            ),
+          ),
+          const SizedBox(width: 8),
+          const Text('Connexion livreur'),
+        ]),
         actions: [
           IconButton(
             tooltip: 'Réglages API',
@@ -73,6 +85,28 @@ class _LoginScreenState extends State<LoginScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: 84,
+                  height: 84,
+                  child: Image.asset(
+                    'assets/images/logo.png',
+                    errorBuilder: (c, e, s) => Container(
+                      decoration: BoxDecoration(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .primary
+                            .withValues(alpha: .08),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(Icons.inventory_2,
+                          size: 42,
+                          color: Theme.of(context).colorScheme.primary),
+                    ),
+                    fit: BoxFit.contain,
+                  ),
+                ),
+                const SizedBox(height: 12),
                 TextField(
                   controller: _email,
                   keyboardType: TextInputType.emailAddress,
@@ -87,7 +121,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 12),
                 if (_error != null)
                   Text(_error!, style: const TextStyle(color: Colors.red)),
-                const SizedBox(height: 12),
+                const SizedBox(height: 8),
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(

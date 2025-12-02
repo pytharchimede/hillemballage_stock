@@ -6,6 +6,8 @@ import 'screens/login.dart';
 import 'screens/dashboard.dart';
 import 'screens/sales_quick.dart';
 import 'screens/settings.dart';
+import 'screens/sales_quick_entry.dart';
+import 'screens/splash.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -19,7 +21,7 @@ class LivreurApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Hill Livreur',
+      title: 'Hillembalage Livreur',
       theme: AppTheme.theme(),
       locale: const Locale('fr'),
       supportedLocales: const [Locale('fr'), Locale('en')],
@@ -28,10 +30,12 @@ class LivreurApp extends StatelessWidget {
         GlobalWidgetsLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,
       ],
-      initialRoute: '/login',
+      initialRoute: '/splash',
       routes: {
+        '/splash': (_) => const SplashScreen(),
         '/login': (_) => const LoginScreen(),
         '/dashboard': (_) => const DashboardScreen(),
+        '/sales_quick_entry': (_) => const SalesQuickEntryScreen(),
         '/sales_quick': (_) => const SalesQuickScreen(),
         '/settings': (_) => const SettingsScreen(),
       },

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../api.dart';
+import '../widgets/app_scaffold.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -21,7 +22,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _load() async {
     final me = await Api.me();
-    final rounds = await Api.openRounds(userId: me?['id'] as int?);
+    if (me == null) {
+      if (!mounted) return;
+      Navigator.of(context).pushNamedAndRemoveUntil('/login', (r) => false);
+      return;
+    }
+    final rounds = await Api.openRounds(userId: me['id'] as int?);
     setState(() {
       _me = me;
       _rounds = rounds;
@@ -31,17 +37,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Dashboard livreur'),
-        actions: [
-          IconButton(
-            tooltip: 'Réglages API',
-            icon: const Icon(Icons.settings),
-            onPressed: () => Navigator.of(context).pushNamed('/settings'),
-          ),
-        ],
-      ),
+    return AppScaffold(
+      title: 'Dashboard livreur',
+      currentRoute: '/dashboard',
+      actions: [
+        IconButton(
+          tooltip: 'Réglages API',
+          icon: const Icon(Icons.settings),
+          onPressed: () => Navigator.of(context).pushNamed('/settings'),
+        ),
+      ],
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : Padding(
