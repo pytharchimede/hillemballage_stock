@@ -256,8 +256,11 @@
         return;
       }
       // 2. Récupérer les tournées ouvertes
+      // Demander explicitement les tournées ouvertes du livreur pour éviter tout filtrage côté serveur
       const roundsResp = await fetch(
-        BASE + "/api/v1/seller-rounds?status=open",
+        BASE +
+          "/api/v1/seller-rounds?status=open&user_id=" +
+          encodeURIComponent(String(userId)),
         {
           headers: authHeaders(),
         }
@@ -266,9 +269,21 @@
       console.log("Tournées ouvertes:", rounds);
       // 3. Filtrer la tournée du livreur
       // const myRounds = (rounds || []).filter((r) => r.user_id === userId);
-      const myRounds = (rounds || []).filter(
+      let myRounds = (rounds || []).filter(
         (r) => String(r.user_id) === String(userId)
       );
+      if (!myRounds.length && Array.isArray(rounds) && rounds.length > 0) {
+        // Fallback: certains backends renvoient déjà filtré, ou user_id peut manquer;
+        // on prend la première tournée ouverte visible pour ne pas bloquer l'UI.
+        console.warn(
+          "[sales_quick] Fallback: utilisation de la première tournée ouverte",
+          {
+            userId,
+            roundsCount: rounds.length,
+          }
+        );
+        myRounds = rounds;
+      }
       if (!myRounds.length) {
         elProducts.innerHTML =
           '<div class="muted">Aucune tournée ouverte pour vous</div>';
@@ -310,11 +325,17 @@
           const qtyAssigned = Number(it.qty_assigned || 0);
           const qtySold = Number(st.qty_sold || 0);
           const stockDepot = qtyAssigned - qtySold;
+          const unitPrice =
+            full && full.unit_price != null
+              ? Number(full.unit_price)
+              : it && it.unit_price != null
+              ? Number(it.unit_price)
+              : 0;
           return {
             id: Number(it.product_id),
             name: full.name || it.product_name || "Produit #" + it.product_id,
             sku: full.sku || "",
-            unit_price: Number(full.unit_price || it.unit_price || 0),
+            unit_price: unitPrice,
             cost_price: Number(full.cost_price || 0),
             qty_assigned: qtyAssigned,
             qty_sold: qtySold,

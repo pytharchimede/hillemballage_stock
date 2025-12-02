@@ -3563,7 +3563,7 @@ if (str_starts_with($path, '/api/v1')) {
         $returns = $data['returns'] ?? [];
         $cash = (int)($data['cash_turned_in'] ?? 0);
         $notes = $data['notes'] ?? null;
-        // Apply returns with strict cap based on assigned-previously-returned -> stock IN only for applied delta
+        // Apply returns with strict cap based on assigned-previously-returned
         $sm = new StockMovement();
         $appliedMeta = [];
         foreach ($returns as $it) {
@@ -3580,10 +3580,12 @@ if (str_starts_with($path, '/api/v1')) {
                 $appliedMeta[] = ['product_id' => $pid, 'requested' => $req, 'applied' => 0, 'allowed' => $allowed];
                 continue;
             }
-            DB::execute('UPDATE seller_round_items SET qty_returned = qty_returned + :q WHERE round_id=:r AND product_id=:p', [':q' => $apply, ':r' => $rid, ':p' => $pid]);
-            // Stock IN back to depot for applied part only
-            $sm->move((int)$round['depot_id'], $pid, 'in', $apply, date('Y-m-d H:i:s'), null, 'return:user:' . (int)$round['user_id']);
-            Stock::adjust((int)$round['depot_id'], $pid, 'in', $apply);
+            DB::execute(
+                'UPDATE seller_round_items SET qty_returned = qty_returned + :q WHERE round_id=:r AND product_id=:p',
+                [':q' => $apply, ':r' => $rid, ':p' => $pid]
+            );
+            // Pas de mouvement de stock ici : l'injection en stock se fera
+            // une seule fois après le contrôle d'équilibre, sur la base de qty_returned
             if ($apply !== $req) {
                 $appliedMeta[] = ['product_id' => $pid, 'requested' => $req, 'applied' => $apply, 'allowed' => $allowed];
             }
@@ -3612,6 +3614,30 @@ if (str_starts_with($path, '/api/v1')) {
             http_response_code(422);
             echo json_encode(['error' => 'ROUND_NOT_BALANCED', 'details' => $mismatches, 'hint' => 'Ajustez les retours pour que Assigné - Vendu = Retourné.']);
             exit;
+        }
+        // À ce stade, pour chaque ligne, Assigné - Vendu = qty_returned
+        // On peut injecter en stock toutes les quantités retournées
+        $depotId = (int)$round['depot_id'];
+        $roundItems = DB::query(
+            'SELECT product_id, qty_returned FROM seller_round_items WHERE round_id = :rid',
+            [':rid' => $rid]
+        );
+        $sm = new StockMovement();
+        foreach ($roundItems as $it) {
+            $pid = (int)$it['product_id'];
+            $qtyReturned = (int)$it['qty_returned'];
+            if ($pid > 0 && $qtyReturned > 0) {
+                $sm->move(
+                    $depotId,
+                    $pid,
+                    'in',
+                    $qtyReturned,
+                    date('Y-m-d H:i:s'),
+                    null,
+                    'return:user:' . (int)$round['user_id']
+                );
+                Stock::adjust($depotId, $pid, 'in', $qtyReturned);
+            }
         }
         // Financial consistency checks in round window
         $paramsWin = [
@@ -3643,17 +3669,6 @@ if (str_starts_with($path, '/api/v1')) {
             http_response_code(422);
             echo json_encode(['error' => 'CASH_MISMATCH', 'details' => ['cash_turned_in' => (int)$cash, 'expected' => (int)$sumPayments]]);
             exit;
-        }
-        // Réinjection de toutes les quantités retournées dans le stock du dépôt
-        $depotId = (int)$round['depot_id'];
-        $roundItems = DB::query('SELECT product_id, qty_returned FROM seller_round_items WHERE round_id = :rid', [':rid' => $rid]);
-        foreach ($roundItems as $it) {
-            $pid = (int)$it['product_id'];
-            $qtyReturned = (int)$it['qty_returned'];
-            if ($pid > 0 && $qtyReturned > 0) {
-                // Utilise le helper centralisé pour ajuster les stocks
-                selfAdjustStock($depotId, $pid, 'return', $qtyReturned);
-            }
         }
         DB::execute('UPDATE seller_rounds SET status="closed", cash_turned_in=:c, notes=:n, closed_at=NOW() WHERE id=:id', [':c' => $cash, ':n' => $notes, ':id' => $rid]);
         // Mise à jour du solde client (balance_cached) pour tous les clients concernés
