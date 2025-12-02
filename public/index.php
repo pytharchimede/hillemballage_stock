@@ -14,6 +14,24 @@ use App\Models\Product;
 
 session_start();
 
+// --- CORS (pour permettre Flutter Web en dev et appels cross-origin) ---
+try {
+    if (isset($_SERVER['HTTP_ORIGIN'])) {
+        header('Access-Control-Allow-Origin: ' . $_SERVER['HTTP_ORIGIN']);
+        header('Vary: Origin');
+    }
+    // Autoriser en-têtes nécessaires (Bearer, JSON)
+    header('Access-Control-Allow-Headers: Authorization, Content-Type, X-Requested-With');
+    // Méthodes supportées
+    header('Access-Control-Allow-Methods: GET, POST, PATCH, PUT, DELETE, OPTIONS');
+    // Préflight
+    if (strtoupper($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
+        http_response_code(204);
+        exit; // Arrêter ici pour la requête préflight CORS
+    }
+} catch (\Throwable $e) { /* ignore */
+}
+
 function format_fcfa($v): string
 {
     $n = (int)$v;
