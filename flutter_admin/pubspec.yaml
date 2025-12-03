@@ -1,0 +1,51 @@
+name: flutter_admin
+description: Admin mobile app for Hillembalage (pro, wow design)
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  http: ^1.2.0
+  shared_preferences: ^2.2.3
+  intl: ^0.20.2
+  url_launcher: ^6.3.0
+  image_picker: ^1.1.2
+  # Design & UI helpers
+  google_fonts: ^6.2.1
+  flutter_svg: ^2.0.10+1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  # Icon & splash generators
+  flutter_launcher_icons: ^0.13.1
+  flutter_native_splash: ^2.4.2
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/
+    - assets/icons/
+
+# App icon configuration
+flutter_icons:
+  android: true
+  ios: true
+  image_path: assets/icons/app_icon.png
+  min_sdk_android: 21
+
+# Splash screen configuration
+flutter_native_splash:
+  color: "#FFFFFF"
+  color_dark: "#121212"
+  android_12:
+    color: "#FFFFFF"
+    color_dark: "#121212"
+  web: true
