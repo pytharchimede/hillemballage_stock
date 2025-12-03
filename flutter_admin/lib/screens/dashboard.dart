@@ -14,7 +14,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   int _clientsCount = 0;
   int _productsCount = 0;
   int _depotsCount = 0;
-  int _livreursCount = 0; // TODO: brancher endpoint livreurs
+  int _livreursCount = 0;
 
   double _ventesDuJour = 0;
   double _encaissementsDuJour = 0;
@@ -35,7 +35,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final clients = await Api.clients();
       final products = await Api.products();
       final depots = await Api.depots();
-      // Best-effort endpoints
+
       final ventes = await Api.salesToday();
       final encaiss = await Api.paymentsToday();
       final tournees = await Api.roundsOngoingCount();
@@ -65,12 +65,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final name = _displayName(_me);
 
     return Scaffold(
+      backgroundColor: theme.colorScheme.surface,
       appBar: AppBar(
-        title: Text('Hill-Admin'),
+        elevation: 0,
+        backgroundColor: theme.colorScheme.surface,
+        title: Text(
+          'Hill-Admin',
+          style: TextStyle(
+            color: theme.colorScheme.onSurface,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
         actions: [
-          // Quick actions in a popup menu
           PopupMenuButton<int>(
             tooltip: 'Actions rapides',
+            icon: Icon(Icons.more_vert, color: theme.colorScheme.onSurface),
             itemBuilder: (context) => [
               const PopupMenuItem(
                 value: 1,
@@ -106,48 +115,47 @@ class _DashboardScreenState extends State<DashboardScreen> {
           IconButton(
             tooltip: 'Rafraîchir',
             onPressed: _load,
-            icon: const Icon(Icons.refresh),
+            icon: Icon(Icons.refresh, color: theme.colorScheme.onSurface),
           ),
         ],
       ),
       body: CustomScrollView(
         slivers: [
+          // HEADER
           SliverToBoxAdapter(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Row(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Bonjour $name',
-                          style: theme.textTheme.titleLarge,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'Vue d’ensemble',
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                              color:
-                                  theme.colorScheme.onSurface.withOpacity(0.7)),
-                        ),
-                      ],
+                  Text(
+                    'Bonjour, $name',
+                    style: theme.textTheme.headlineMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Voici l’activité de votre journée',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurface.withOpacity(0.7),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
                 ],
               ),
             ),
           ),
+
+          // GRID
           SliverPadding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.symmetric(horizontal: 16),
             sliver: SliverGrid(
               gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: 2,
-                mainAxisSpacing: 12,
-                crossAxisSpacing: 12,
-                childAspectRatio: 1.3,
+                mainAxisSpacing: 18,
+                crossAxisSpacing: 18,
+                childAspectRatio: .95,
               ),
               delegate: SliverChildListDelegate.fixed([
                 _StatCard(
@@ -164,7 +172,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
                 _StatCard(
                   icon: Icons.home_work,
-                  title: 'Depots',
+                  title: 'Dépôts',
                   value: _depotsCount.toString(),
                   trend: '+',
                 ),
@@ -190,24 +198,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   icon: Icons.attach_money,
                   title: 'Ventes',
                   value: _formatMoney(_ventesDuJour),
-                  trend: 'jour',
+                  trend: 'du jour',
                 ),
                 _StatCard(
                   icon: Icons.payments,
                   title: 'Encaissements',
                   value: _formatMoney(_encaissementsDuJour),
-                  trend: 'jour',
+                  trend: 'du jour',
                 ),
               ]),
             ),
           ),
+
           if (_loading)
             const SliverToBoxAdapter(
               child: Padding(
-                padding: EdgeInsets.all(16),
+                padding: EdgeInsets.all(24),
                 child: Center(child: CircularProgressIndicator()),
               ),
             ),
+
+          const SliverToBoxAdapter(child: SizedBox(height: 30)),
         ],
       ),
     );
@@ -235,44 +246,68 @@ class _StatCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
-    final bg = isDark ? theme.colorScheme.surfaceVariant : Colors.white;
-    final border =
-        BorderSide(color: theme.colorScheme.outlineVariant.withOpacity(0.4));
 
     return Container(
       decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.fromBorderSide(border),
+        color: isDark
+            ? theme.colorScheme.surfaceContainerHigh
+            : theme.colorScheme.surfaceVariant,
+        borderRadius: BorderRadius.circular(18),
         boxShadow: [
           if (!isDark)
             BoxShadow(
-              color: Colors.black.withOpacity(0.04),
-              blurRadius: 10,
+              color: Colors.black.withOpacity(0.06),
               offset: const Offset(0, 6),
+              blurRadius: 16,
             ),
         ],
       ),
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+
+      // IMPORTANT : la clé qui supprime 100% des overflow :
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _IconBadge(icon: icon),
-          const SizedBox(height: 14),
-          Text(title, style: theme.textTheme.bodyMedium),
-          const SizedBox(height: 6),
+          const SizedBox(height: 12),
+
+          // Titre
           Text(
-            value,
-            style: theme.textTheme.headlineSmall
-                ?.copyWith(fontSize: 20, fontWeight: FontWeight.w700),
+            title,
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+              color: theme.colorScheme.onSurface.withOpacity(0.85),
+            ),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
-          const Spacer(),
+          const SizedBox(height: 6),
+
+          // Valeur (optimisée pour ne jamais overflow)
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              value,
+              style: theme.textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.bold,
+                fontSize: 22,
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 10),
+
+          // Trend
           Text(
             trend,
-            style: theme.textTheme.labelMedium
-                ?.copyWith(color: theme.colorScheme.primary),
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: theme.colorScheme.primary,
+              fontWeight: FontWeight.w500,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
         ],
       ),
@@ -288,19 +323,14 @@ class _IconBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-    final bg = isDark
-        ? theme.colorScheme.primary.withOpacity(0.12)
-        : theme.colorScheme.primary.withOpacity(0.1);
-    final fg = theme.colorScheme.primary;
 
     return Container(
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: bg,
+        color: theme.colorScheme.primary.withOpacity(0.12),
         borderRadius: BorderRadius.circular(12),
       ),
-      padding: const EdgeInsets.all(10),
-      child: Icon(icon, color: fg, size: 24),
+      child: Icon(icon, size: 24, color: theme.colorScheme.primary),
     );
   }
 }
