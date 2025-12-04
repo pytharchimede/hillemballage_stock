@@ -139,6 +139,94 @@ class Api {
     return null;
   }
 
+  // --- Time series (day/week) ---
+  // Returns list of numeric values for charts; null if endpoint missing
+  static Future<List<double>?> seriesClients({String period = 'week'}) async {
+    return _fetchSeries([
+      '$base/api/v1/series/clients?period=$period',
+      '$base/api/v1/stats/clients/series?period=$period',
+    ]);
+  }
+
+  static Future<List<double>?> seriesProducts({String period = 'week'}) async {
+    return _fetchSeries([
+      '$base/api/v1/series/products?period=$period',
+      '$base/api/v1/stats/products/series?period=$period',
+    ]);
+  }
+
+  static Future<List<double>?> seriesDepots({String period = 'week'}) async {
+    return _fetchSeries([
+      '$base/api/v1/series/depots?period=$period',
+      '$base/api/v1/stats/depots/series?period=$period',
+    ]);
+  }
+
+  static Future<List<double>?> seriesLivreurs({String period = 'week'}) async {
+    return _fetchSeries([
+      '$base/api/v1/series/livreurs?period=$period',
+      '$base/api/v1/stats/livreurs/series?period=$period',
+    ]);
+  }
+
+  static Future<List<double>?> seriesOrders({String period = 'day'}) async {
+    return _fetchSeries([
+      '$base/api/v1/series/orders?period=$period',
+      '$base/api/v1/stats/orders/series?period=$period',
+    ]);
+  }
+
+  static Future<List<double>?> seriesRounds({String period = 'day'}) async {
+    return _fetchSeries([
+      '$base/api/v1/series/rounds?period=$period',
+      '$base/api/v1/stats/rounds/series?period=$period',
+    ]);
+  }
+
+  static Future<List<double>?> seriesSales({String period = 'day'}) async {
+    return _fetchSeries([
+      '$base/api/v1/series/sales?period=$period',
+      '$base/api/v1/reports/sales/series?period=$period',
+    ]);
+  }
+
+  static Future<List<double>?> seriesPayments({String period = 'day'}) async {
+    return _fetchSeries([
+      '$base/api/v1/series/payments?period=$period',
+      '$base/api/v1/reports/payments/series?period=$period',
+    ]);
+  }
+
+  // Helper: try candidates returning either {series:[...]} or [...]
+  static Future<List<double>?> _fetchSeries(List<String> candidates) async {
+    for (final p in candidates) {
+      final u = Uri.parse(p);
+      try {
+        final r = await http.get(u, headers: await _headers(json: false));
+        if (r.statusCode == 200) {
+          final parsed = jsonDecode(r.body);
+          if (parsed is Map && parsed['series'] is List) {
+            final list = (parsed['series'] as List)
+                .where((e) => e is num)
+                .map((e) => (e as num).toDouble())
+                .toList();
+            return list;
+          }
+          if (parsed is List) {
+            final list = parsed
+                .where((e) => e is num)
+                .map((e) => (e as num).toDouble())
+                .toList();
+            return list;
+          }
+        }
+      } catch (_) {
+        // ignore and try next candidate
+      }
+    }
+    return null;
+  }
+
   static Future<num?> paymentsToday() async {
     final candidates = [
       '$base/api/v1/payments?date=today',
