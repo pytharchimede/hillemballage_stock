@@ -42,48 +42,79 @@ class _SalesQuickScreenState extends State<SalesQuickScreen> {
   Future<void> _load() async {
     if (round == null) return;
     final depotId = int.tryParse(round!['depot_id'].toString()) ?? 0;
+    final roundId = int.tryParse(round!['id'].toString()) ?? 0;
 
-    // Statistiques (qty_sold)
-    final stats = await Api.roundStats(round!['id'] as int);
-
-    // Produits attribués
-    final assigned = (round!['items'] as List<dynamic>? ?? []);
+    // Statistiques tournée: contient qty_sold et parfois qty_remaining/qty_assigned
+    final stats = await Api.roundStats(roundId);
 
     // Produits du dépôt
     final depotProducts = await Api.depotProducts(depotId);
 
-    // Map rapide des stats
-    final statMap = <int, Map<String, dynamic>>{};
-    for (final it in (stats?['items'] as List<dynamic>? ?? [])) {
-      statMap[(it['product_id'] as int)] = it as Map<String, dynamic>;
-    }
-
     // Construction liste affichable
     final list = <Map<String, dynamic>>[];
-    for (final it in assigned) {
-      final pid = int.tryParse(it['product_id'].toString()) ?? 0;
-
-      final full = depotProducts.firstWhere(
-        (p) => int.tryParse(p['id'].toString()) == pid,
-        orElse: () => {},
-      );
-
-      final st = statMap[pid] ?? {};
-      final qtyAssigned = int.tryParse(it['qty_assigned'].toString()) ?? 0;
-      final qtySold = int.tryParse((st['qty_sold'] ?? '0').toString()) ?? 0;
-
-      final remaining = qtyAssigned - qtySold;
-
-      if (remaining > 0) {
-        list.add({
-          'id': pid,
-          'name': (full['name'] ?? it['name'] ?? 'Produit #$pid').toString(),
-          'unit_price': int.tryParse(
-                (full['unit_price'] ?? it['unit_price'] ?? '0').toString(),
-              ) ??
-              0,
-          'stock_depot': remaining,
-        });
+    final statsItems = (stats?['items'] as List<dynamic>? ?? []);
+    if (statsItems.isNotEmpty) {
+      // Préférer les stats: qty_remaining si dispo, sinon qty_assigned - qty_sold
+      for (final st in statsItems) {
+        final pid = int.tryParse(st['product_id']?.toString() ?? '0') ?? 0;
+        final full = depotProducts.firstWhere(
+          (p) => int.tryParse(p['id'].toString()) == pid,
+          orElse: () => {},
+        );
+        final qtyRem =
+            int.tryParse((st['qty_remaining'] ?? '0').toString()) ?? 0;
+        final qtyAssigned =
+            int.tryParse((st['qty_assigned'] ?? '0').toString()) ?? 0;
+        final qtySold = int.tryParse((st['qty_sold'] ?? '0').toString()) ?? 0;
+        final remaining = qtyRem > 0 ? qtyRem : (qtyAssigned - qtySold);
+        if (remaining > 0) {
+          list.add({
+            'id': pid,
+            'name': (full['name'] ?? st['product_name'] ?? 'Produit #$pid')
+                .toString(),
+            'unit_price': int.tryParse(
+                  (full['unit_price'] ?? st['unit_price'] ?? '0').toString(),
+                ) ??
+                0,
+            'stock_depot': remaining,
+          });
+        }
+      }
+    } else {
+      // Fallback: utiliser les items de la tournée (route arguments) pour qty_assigned, et stats pour qty_sold
+      final assignedFromRound = (round!['items'] as List<dynamic>? ?? []);
+      // Map product_id -> stats
+      final statMap = <int, Map<String, dynamic>>{};
+      for (final it in (stats?['items'] as List<dynamic>? ?? [])) {
+        final pid = int.tryParse(it['product_id']?.toString() ?? '0') ?? 0;
+        statMap[pid] = it as Map<String, dynamic>;
+      }
+      for (final it in assignedFromRound) {
+        final pid = int.tryParse(it['product_id']?.toString() ?? '0') ?? 0;
+        final full = depotProducts.firstWhere(
+          (p) => int.tryParse(p['id'].toString()) == pid,
+          orElse: () => {},
+        );
+        final st = statMap[pid] ?? {};
+        final qtyAssigned =
+            int.tryParse(it['qty_assigned']?.toString() ?? '0') ?? 0;
+        final qtySold = int.tryParse((st['qty_sold'] ?? '0').toString()) ?? 0;
+        final remaining = qtyAssigned - qtySold;
+        if (remaining > 0) {
+          list.add({
+            'id': pid,
+            'name': (full['name'] ??
+                    it['product_name'] ??
+                    it['name'] ??
+                    'Produit #$pid')
+                .toString(),
+            'unit_price': int.tryParse(
+                  (full['unit_price'] ?? it['unit_price'] ?? '0').toString(),
+                ) ??
+                0,
+            'stock_depot': remaining,
+          });
+        }
       }
     }
 

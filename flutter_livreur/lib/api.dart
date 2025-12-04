@@ -172,6 +172,14 @@ class Api {
     return null;
   }
 
+  // Produits attribués à une tournée (livreur)
+  static Future<List<dynamic>> roundAssignedItems(int roundId) async {
+    final u = Uri.parse('$base/api/v1/seller-rounds/$roundId/items');
+    final r = await http.get(u, headers: await _headers(json: false));
+    if (r.statusCode == 200) return (jsonDecode(r.body) as List<dynamic>);
+    return [];
+  }
+
   static Future<List<dynamic>> depotProducts(int depotId) async {
     final u = Uri.parse(
       '$base/api/v1/products?depot_id=$depotId&only_in_stock=1',
