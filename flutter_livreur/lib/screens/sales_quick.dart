@@ -155,12 +155,19 @@ class _SalesQuickScreenState extends State<SalesQuickScreen> {
   }
 
   Future<void> _submit() async {
-    final depotId = round!['depot_id'] as int;
+    final depotId = int.tryParse(round!['depot_id'].toString()) ?? 0;
     final roundId = int.tryParse(round!['id'].toString()) ?? 0;
 
     if (selectedClient == null) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('Client requis.')));
+      return;
+    }
+
+    if (roundId <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Tournée manquante (seller_round_id).')),
+      );
       return;
     }
 
@@ -205,8 +212,9 @@ class _SalesQuickScreenState extends State<SalesQuickScreen> {
       await _load();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Erreur : $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur vente: $e')),
+      );
     }
   }
 
