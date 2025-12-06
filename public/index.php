@@ -1551,7 +1551,18 @@ if (str_starts_with($path, '/api/v1')) {
     // --- Seller rounds listing (open/closed) brief ---
     if ($path === '/api/v1/seller-rounds' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $u = requireAuth();
-        requirePermission($u, 'seller_rounds', 'view');
+        // Assouplir: les livreurs peuvent voir leurs propres tournées même si seller_rounds.view est désactivé
+        $canView = userCan($u, 'seller_rounds', 'view');
+        $isLivreur = (($u['role'] ?? '') === 'livreur');
+        $requestedUserId = isset($_GET['user_id']) ? (int)$_GET['user_id'] : null;
+        if (!$canView && $isLivreur) {
+            // Autoriser si la requête cible son propre user_id, sinon le forcer
+            if ($requestedUserId === null || $requestedUserId !== (int)($u['id'] ?? 0)) {
+                $_GET['user_id'] = (string)((int)($u['id'] ?? 0));
+            }
+        } else if (!$canView) {
+            requirePermission($u, 'seller_rounds', 'view');
+        }
         ensure_seller_rounds_tables();
         $status = strtolower(trim($_GET['status'] ?? ''));
         $allowed = ['open', 'closed'];
@@ -1612,7 +1623,6 @@ if (str_starts_with($path, '/api/v1')) {
     // Seller round stats (items + totals)
     if (preg_match('#^/api/v1/seller-rounds/(\d+)/stats$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $u = requireAuth();
-        requirePermission($u, 'seller_rounds', 'view');
         ensure_seller_rounds_tables();
         $rid = (int)$m[1];
         $round = DB::query('SELECT * FROM seller_rounds WHERE id=:id', [':id' => $rid])[0] ?? null;
@@ -1620,6 +1630,16 @@ if (str_starts_with($path, '/api/v1')) {
             http_response_code(404);
             echo json_encode(['error' => 'Not found']);
             exit;
+        }
+        // Assouplir: les livreurs peuvent voir les stats de leurs propres tournées
+        $canView = userCan($u, 'seller_rounds', 'view');
+        $isLivreur = (($u['role'] ?? '') === 'livreur');
+        if (!$canView) {
+            if (!($isLivreur && (int)($u['id'] ?? 0) === (int)$round['user_id'])) {
+                http_response_code(403);
+                echo json_encode(['error' => 'Forbidden', 'entity' => 'seller_rounds', 'action' => 'view']);
+                exit;
+            }
         }
         $items = DB::query('SELECT sri.product_id,sri.qty_assigned,sri.qty_returned,p.name AS product_name FROM seller_round_items sri LEFT JOIN products p ON p.id=sri.product_id WHERE sri.round_id=:r', [':r' => $rid]);
         $outItems = [];
