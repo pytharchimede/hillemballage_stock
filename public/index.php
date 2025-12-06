@@ -43,7 +43,7 @@ function apiUser(): ?array
     $hdr = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
     $token = null;
     if (preg_match('/Bearer\s+(.*)/i', $hdr, $m)) {
-        $token = trim($m[1]);
+        $token = trim($m[1] ?? '');
     }
     if (!$token && isset($_GET['api_token'])) $token = $_GET['api_token'];
     // Fallback session: si pas de token mais session web active, retourner l'utilisateur de la session
@@ -65,6 +65,19 @@ function apiUser(): ?array
         // ignore
     }
     return null;
+}
+
+// Helper: return current authenticated user from session or API token
+if (!function_exists('currentUserOrApi')) {
+    function currentUserOrApi(): ?array
+    {
+        if (!empty($_SESSION['user_id'])) {
+            $uid = (int)$_SESSION['user_id'];
+            $urow = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+            return $urow ?: null;
+        }
+        return apiUser();
+    }
 }
 
 function parsePermissions(array $u): array
@@ -204,7 +217,7 @@ function ensure_clients_depot_column(): void
     try {
         $col = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="clients" AND COLUMN_NAME="depot_id"');
         if (!$col) {
-            DB::execute('ALTER TABLE clients ADD COLUMN depot_id INT UNSIGNED NULL AFTER address');
+            DB::execute('ALTER TABLE clients ADD COLUMN depot_id INT UNSIGNED NULL AFTER longitude');
             // Index léger
             try {
                 DB::execute('CREATE INDEX clients_depot_fk ON clients(depot_id)');
@@ -252,6 +265,61 @@ function ensure_users_balance_column(): void
 
 ensure_clients_balance_column();
 ensure_users_balance_column();
+
+// --- PDF helper: unified branded TCPDF instance ---
+if (!function_exists('hill_pdf_create')) {
+    function hill_pdf_create(string $title = '')
+    {
+        if (!class_exists('HILLPDF')) {
+            class HILLPDF extends \TCPDF
+            {
+                public function Header()
+                {
+                    // Background bar
+                    $this->SetFillColor(245, 245, 245);
+                    $this->Rect(0, 0, 210, 40, 'F');
+                    // Project logo
+                    $logo = __DIR__ . '/../assets/images/logos_complet_single.png';
+                    if (@file_exists($logo)) {
+                        $this->Image($logo, 12, 10, 30, '', '', '', 'T', false, 300);
+                    }
+                    $this->SetY(8);
+                    $this->SetX(50);
+                    $this->SetFont('helvetica', '', 9);
+                    $this->SetTextColor(38, 50, 56);
+                    $txt = "PAPETERIE HILL\nN°CC : 25 00 790 P\nRCCM N° : CI ABJ-03-3035-A10-C0717\nSiège : Abidjan Yopougon Port Bouet 2 – Carrefour Niangon\nEmail : hillemballage@gmail.com\nActivité : Vente d'articles, emballages & divers";
+                    $this->MultiCell(0, 5, $txt, 0, 'L', 0, 1, 50, 8, true);
+                    $this->SetDrawColor(255, 167, 38);
+                    $this->SetLineWidth(1.2);
+                    $this->Line(10, 41, 200, 41);
+                }
+                public function Footer()
+                {
+                    $this->SetY(-20);
+                    $this->SetDrawColor(204, 204, 204);
+                    $this->SetLineWidth(0.2);
+                    $this->Line(10, $this->GetY(), 200, $this->GetY());
+                    $this->SetY(-17);
+                    $this->SetFont('helvetica', '', 9);
+                    $this->SetTextColor(60, 60, 60);
+                    $this->Cell(0, 5, "PAPETERIE HILL – Solutions d’emballage & logistique", 0, 1, 'C');
+                    $this->SetY(-12);
+                    $this->Cell(0, 5, 'Page ' . $this->getAliasNumPage() . ' / ' . $this->getAliasNbPages(), 0, 0, 'C');
+                }
+            }
+        }
+        $pdf = new HILLPDF('P', 'mm', 'A4', true, 'UTF-8', false);
+        if ($title) $pdf->SetTitle($title);
+        $pdf->SetCreator('Hill');
+        $pdf->SetAuthor('Hill');
+        $pdf->SetMargins(15, 48, 15);
+        $pdf->SetHeaderMargin(10);
+        $pdf->SetFooterMargin(15);
+        $pdf->SetAutoPageBreak(true, 25);
+        $pdf->AddPage();
+        return $pdf;
+    }
+}
 
 function loadExplicitPermissions(int $uid): array
 {
@@ -889,14 +957,10 @@ if (str_starts_with($path, '/api/v1')) {
         if ($format === 'pdf') {
             header('Content-Type: application/pdf');
             header('Content-Disposition: attachment; filename="clients_' . date('Ymd_His') . '.pdf"');
-            // Minimal PDF via TCPDF si dispo, sinon fallback texte
+            // Branded PDF via HILLPDF
             try {
-                $pdf = new \TCPDF();
-                $pdf->SetCreator('Hill');
-                $pdf->SetAuthor('Hill');
-                $pdf->SetTitle('Clients');
-                $pdf->AddPage();
-                $html = '<h2>Liste des clients</h2><table border="1" cellpadding="4"><thead><tr><th>ID</th><th>Nom</th><th>Téléphone</th><th>Adresse</th><th>Dépôt</th><th>Solde</th></tr></thead><tbody>';
+                $pdf = hill_pdf_create('Clients');
+                $html = '<h2 style="color:#263238">Liste des clients</h2><table border="1" cellpadding="4"><thead><tr><th>ID</th><th>Nom</th><th>Téléphone</th><th>Adresse</th><th>Dépôt</th><th>Solde</th></tr></thead><tbody>';
                 foreach ($rows as $r) {
                     $html .= '<tr><td>' . (int)$r['id'] . '</td><td>' . htmlspecialchars($r['name'] ?? '') . '</td><td>' . htmlspecialchars($r['phone'] ?? '') . '</td><td>' . htmlspecialchars($r['address'] ?? '') . '</td><td>' . htmlspecialchars((string)($r['depot_id'] ?? '')) . '</td><td>' . (int)($r['balance'] ?? 0) . '</td></tr>';
                 }
@@ -1791,9 +1855,8 @@ if (str_starts_with($path, '/api/v1')) {
             header('Content-Type: application/pdf');
             header('Content-Disposition: attachment; filename="rounds_' . date('Ymd_His') . '.pdf"');
             try {
-                $pdf = new \TCPDF();
-                $pdf->AddPage();
-                $html = '<h2>Tournées ' . htmlspecialchars($params[':st']) . '</h2><table border="1" cellpadding="4"><thead><tr><th>#</th><th>Dépôt</th><th>Livreur</th><th>Statut</th><th>Assignée</th><th>Clôturée</th><th>Cash</th></tr></thead><tbody>';
+                $pdf = hill_pdf_create('Tournées vendeurs');
+                $html = '<h2 style="color:#263238">Tournées ' . htmlspecialchars($params[':st'] ?? '') . '</h2><table border="1" cellpadding="4"><thead><tr><th>#</th><th>Dépôt</th><th>Livreur</th><th>Statut</th><th>Assignée</th><th>Clôturée</th><th>Cash</th></tr></thead><tbody>';
                 foreach ($rows as $r) {
                     $html .= '<tr><td>' . (int)$r['id'] . '</td><td>' . htmlspecialchars($r['depot_name'] ?? (string)$r['depot_id']) . '</td><td>' . htmlspecialchars($r['user_name'] ?? (string)$r['user_id']) . '</td><td>' . htmlspecialchars($r['status']) . '</td><td>' . htmlspecialchars((string)$r['assigned_at']) . '</td><td>' . htmlspecialchars((string)($r['closed_at'] ?? '')) . '</td><td>' . (int)($r['cash_turned_in'] ?? 0) . '</td></tr>';
                 }
@@ -1911,11 +1974,16 @@ if (str_starts_with($path, '/api/v1')) {
             fclose($out);
             exit;
         } else {
-            $pdf = new \TCPDF('P', 'mm', 'A4');
-            $pdf->SetCreator('Hill Stock');
-            $pdf->SetAuthor('Hill Stock');
-            $pdf->SetTitle('Relevé client');
-            $pdf->AddPage();
+            // Branded PDF
+            if (function_exists('hill_pdf_create')) {
+                $pdf = hill_pdf_create('Relevé client');
+            } else {
+                $pdf = new \TCPDF('P', 'mm', 'A4');
+                $pdf->SetCreator('Hill Stock');
+                $pdf->SetAuthor('Hill Stock');
+                $pdf->SetTitle('Relevé client');
+                $pdf->AddPage();
+            }
             $html = '<h2 style="font-size:16px;margin:0 0 6px">Relevé client</h2>';
             $html .= '<div style="font-size:10px;color:#666">Client: ' . htmlspecialchars((string)$cli['name']) . ' — Généré le ' . htmlspecialchars(date('Y-m-d H:i')) . '</div><br />';
             $html .= '<table border="1" cellpadding="4" cellspacing="0"><thead><tr style="background:#f2f2f2;font-weight:bold">'
@@ -2111,11 +2179,17 @@ if (str_starts_with($path, '/api/v1')) {
             fclose($out);
             exit;
         } else {
-            $pdf = new \TCPDF('L', 'mm', 'A4');
-            $pdf->SetCreator('Hill Stock');
-            $pdf->SetAuthor('Hill Stock');
-            $pdf->SetTitle('Créances' . ($groupByUser ? ' (groupées par agent)' : ''));
-            $pdf->AddPage();
+            // Branded PDF
+            $title = 'Créances' . ($groupByUser ? ' (groupées par agent)' : '');
+            if (function_exists('hill_pdf_create')) {
+                $pdf = hill_pdf_create($title);
+            } else {
+                $pdf = new \TCPDF('L', 'mm', 'A4');
+                $pdf->SetCreator('Hill Stock');
+                $pdf->SetAuthor('Hill Stock');
+                $pdf->SetTitle($title);
+                $pdf->AddPage();
+            }
             $html = '<h2 style="font-size:16px;margin:0 0 6px">Créances (par client' . ($groupByUser ? ', groupées par agent' : '') . ')</h2>';
             $html .= '<div style="font-size:10px;color:#666">Généré le ' . htmlspecialchars(date('Y-m-d H:i')) . '</div><br />';
             if ($groupByUser) {
@@ -2226,11 +2300,16 @@ if (str_starts_with($path, '/api/v1')) {
             fclose($out);
             exit;
         } else {
-            $pdf = new \TCPDF('L', 'mm', 'A4');
-            $pdf->SetCreator('Hill Stock');
-            $pdf->SetAuthor('Hill Stock');
-            $pdf->SetTitle('Plan de tournée');
-            $pdf->AddPage();
+            // Branded PDF
+            if (function_exists('hill_pdf_create')) {
+                $pdf = hill_pdf_create('Plan de tournée');
+            } else {
+                $pdf = new \TCPDF('L', 'mm', 'A4');
+                $pdf->SetCreator('Hill Stock');
+                $pdf->SetAuthor('Hill Stock');
+                $pdf->SetTitle('Plan de tournée');
+                $pdf->AddPage();
+            }
             $html = '<h2 style="font-size:16px;margin:0 0 6px">Plan de tournée (créances)</h2><div style="font-size:10px;color:#666">Généré le ' . htmlspecialchars(date('Y-m-d H:i')) . '</div><br />';
             $html .= '<table border="1" cellpadding="4" cellspacing="0"><thead><tr style="background:#f2f2f2;font-weight:bold"><th width="7%">Ordre</th><th width="30%">Client</th><th width="12%">Solde</th><th width="15%">Dernier paiement</th><th width="8%">Jours</th><th width="14%">Dernière vente</th><th width="14%">Téléphone</th></tr></thead><tbody>';
             $order = 1;
@@ -2480,13 +2559,17 @@ if (str_starts_with($path, '/api/v1')) {
         $rows = DB::query($sql, $params);
         $format = strtolower(trim($_GET['format'] ?? 'csv'));
         if ($format === 'pdf') {
-            // Générer PDF via TCPDF
-            $pdf = new TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
-            $pdf->SetCreator('Hill');
-            $pdf->SetAuthor('Hill');
-            $pdf->SetTitle('Produits');
-            $pdf->SetMargins(10, 10, 10);
-            $pdf->AddPage();
+            // Branded PDF
+            if (function_exists('hill_pdf_create')) {
+                $pdf = hill_pdf_create('Produits');
+            } else {
+                $pdf = new TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
+                $pdf->SetCreator('Hill');
+                $pdf->SetAuthor('Hill');
+                $pdf->SetTitle('Produits');
+                $pdf->SetMargins(10, 10, 10);
+                $pdf->AddPage();
+            }
             $html = '<h3>Liste des produits</h3>';
             $html .= '<table border="1" cellpadding="4"><thead><tr><th>ID</th><th>SKU</th><th>Produit</th><th>PU</th><th>Stock</th></tr></thead><tbody>';
             foreach ($rows as $r) {
@@ -2593,6 +2676,7 @@ if (str_starts_with($path, '/api/v1')) {
                 ':s' => $data['sku'] ?? '',
                 ':p' => (int)($data['unit_price'] ?? 0),
                 ':d' => ($data['description'] ?? null),
+
                 ':id' => $id
             ];
             if (isset($data['active'])) {
@@ -2685,6 +2769,76 @@ if (str_starts_with($path, '/api/v1')) {
             echo json_encode(['updated' => true, 'image_path' => $img]);
             exit;
         }
+    }
+    // Single product export (fiche produit) as PDF
+    if (preg_match('#^/api/v1/products/(\d+)/export$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $pid = (int)$m[1];
+        $auth = currentUserOrApi();
+        requirePermission($auth, 'products', 'view');
+        $p = DB::query('SELECT id,name,sku,unit_price,description,image_path,active,created_at FROM products WHERE id=:id LIMIT 1', [':id' => $pid])[0] ?? null;
+        if (!$p) {
+            http_response_code(404);
+            echo 'Produit introuvable';
+            exit;
+        }
+        // Audit
+        try {
+            $actor = !empty($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : (apiUser()['id'] ?? null);
+            audit_log($actor, 'export', 'products', (int)$p['id'], $path, 'GET');
+        } catch (\Throwable $e) {
+        }
+        // Build PDF
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: attachment; filename="fiche_produit_' . (int)$pid . '.pdf"');
+        $title = 'Fiche produit';
+        if (function_exists('hill_pdf_create')) {
+            $pdf = hill_pdf_create($title);
+        } else {
+            if (!class_exists('TCPDF')) {
+                try {
+                    @include_once __DIR__ . '/../vendor/tecnickcom/tcpdf/tcpdf.php';
+                } catch (\Throwable $e) {
+                }
+            }
+            $pdf = new \TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
+            $pdf->SetCreator('Hill');
+            $pdf->SetAuthor('Hill');
+            $pdf->SetTitle($title);
+            $pdf->AddPage();
+        }
+        $html = '<style>
+        .p-card{border:2px solid #222;border-radius:14px;padding:16px;font-family:helvetica;max-width:420px;box-shadow:0 3px 8px rgba(0,0,0,.15);} 
+        .p-head{display:flex;gap:12px;align-items:center;margin-bottom:8px;} 
+        .p-img{width:100px;height:100px;object-fit:cover;border:1px solid #555;border-radius:6px;background:#eee;} 
+        .p-title{font-size:16px;font-weight:bold;letter-spacing:.5px;text-transform:uppercase;} 
+        .p-row{margin:4px 0;font-size:11px;} 
+        .p-label{color:#555;font-weight:bold;} 
+        .p-badge{display:inline-block;padding:3px 8px;border-radius:12px;background:#0d6efd;color:#fff;font-size:10px;} 
+        .p-inactive{background:#b02a37 !important;} 
+        .p-desc{margin-top:8px;font-size:11px;color:#333;} 
+        </style>';
+        $photoTag = '<div class="p-img"></div>';
+        $photo = $p['image_path'] ?? '';
+        if ($photo && preg_match('#^/#', $photo)) {
+            $fs = __DIR__ . $photo; // path relative to public
+            if (is_file($fs)) {
+                $pdf->Image($fs, 20, 44, 30, 30, '', '', '', true);
+                $photoTag = '<img class="p-img" src="' . htmlspecialchars($photo) . '" />';
+            }
+        }
+        $badgeClass = 'p-badge' . ((int)$p['active'] === 1 ? '' : ' p-inactive');
+        $activeLabel = (int)$p['active'] === 1 ? 'ACTIF' : 'INACTIF';
+        $html .= '<div class="p-card">'
+            . '<div class="p-head">' . $photoTag . '<div><div class="p-title">FICHE PRODUIT</div><div class="p-row"><span class="' . $badgeClass . '">' . $activeLabel . '</span></div></div></div>'
+            . '<div class="p-row"><span class="p-label">Nom:</span> ' . htmlspecialchars($p['name'] ?? '') . '</div>'
+            . '<div class="p-row"><span class="p-label">SKU:</span> ' . htmlspecialchars($p['sku'] ?? '') . '</div>'
+            . '<div class="p-row"><span class="p-label">Prix unitaire:</span> ' . (int)($p['unit_price'] ?? 0) . '</div>'
+            . '<div class="p-row"><span class="p-label">Créé le:</span> ' . htmlspecialchars(substr((string)$p['created_at'], 0, 19)) . '</div>'
+            . '<div class="p-desc"><span class="p-label">Description:</span><br />' . nl2br(htmlspecialchars((string)($p['description'] ?? ''))) . '</div>'
+            . '</div>';
+        $pdf->writeHTML($html);
+        $pdf->Output('fiche_produit_' . (int)$pid . '.pdf', 'I');
+        exit;
     }
     // Users management (admin) + runtime colonne photo_path & active
     if ($path === '/api/v1/users' && $_SERVER['REQUEST_METHOD'] === 'GET') {
@@ -5241,11 +5395,17 @@ if ($path === '/orders/export') {
         audit_log($actor, 'export', 'orders', (int)$ord['id'], $path, 'GET', ['reference' => $ord['reference'] ?? null]);
     } catch (\Throwable $e) {
     }
-    $pdf = new \TCPDF();
-    $pdf->SetCreator('Hill Stock');
-    $pdf->SetAuthor('Hill');
-    $pdf->SetTitle('Bon de commande ' . $ord['reference']);
-    $pdf->AddPage();
+    // Branded PDF
+    $title = 'Bon de commande ' . ($ord['reference'] ?? '');
+    if (function_exists('hill_pdf_create')) {
+        $pdf = hill_pdf_create($title);
+    } else {
+        $pdf = new \TCPDF();
+        $pdf->SetCreator('Hill Stock');
+        $pdf->SetAuthor('Hill');
+        $pdf->SetTitle($title);
+        $pdf->AddPage();
+    }
     $html = '<h1 style="font-size:18px;">Bon de commande ' . htmlspecialchars($ord['reference']) . '</h1>';
     $html .= '<div>Fournisseur: ' . htmlspecialchars((string)$ord['supplier']) . '</div>';
     $html .= '<div>Status: ' . htmlspecialchars((string)$ord['status']) . '</div>';
@@ -5260,18 +5420,20 @@ if ($path === '/orders/export') {
     exit;
 }
 // User card export (ID pro)
+// User card export (ID pro)
 if ($path === '/users/export') {
+
     $id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
     if ($id <= 0) {
         http_response_code(422);
         echo 'ID manquant';
         exit;
     }
-    // Assurer colonnes
+
+    // --- Vérification colonnes ---
     try {
         $cols = DB::query('SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="users"');
-        $havePhoto = false;
-        $haveActive = false;
+        $havePhoto = $haveActive = false;
         foreach ($cols as $c) {
             if ($c['COLUMN_NAME'] === 'photo_path') $havePhoto = true;
             if ($c['COLUMN_NAME'] === 'active') $haveActive = true;
@@ -5280,123 +5442,404 @@ if ($path === '/users/export') {
         if (!$haveActive) DB::execute('ALTER TABLE users ADD COLUMN active TINYINT UNSIGNED NOT NULL DEFAULT 1 AFTER photo_path');
     } catch (\Throwable $e) {
     }
-    $usr = DB::query('SELECT id,name,email,role,depot_id,photo_path,active,created_at FROM users WHERE id=:id LIMIT 1', [":id" => $id])[0] ?? null;
+
+    // --- Récup user ---
+    $usr = DB::query(
+        'SELECT id,name,email,role,depot_id,photo_path,active,created_at 
+         FROM users WHERE id=:id LIMIT 1',
+        [":id" => $id]
+    )[0] ?? null;
+
     if (!$usr) {
         http_response_code(404);
         echo 'Utilisateur introuvable';
         exit;
     }
+
     $dep = null;
     if (!empty($usr['depot_id'])) {
         $dep = DB::query('SELECT id,name,code FROM depots WHERE id=:d', [":d" => (int)$usr['depot_id']])[0] ?? null;
     }
+
+    // --- Chargement TCPDF ---
     if (!class_exists('TCPDF')) {
-        try {
-            @include_once __DIR__ . '/../vendor/tecnickcom/tcpdf/tcpdf.php';
-        } catch (\Throwable $e) {
-        }
+        @include_once __DIR__ . '/../vendor/tecnickcom/tcpdf/tcpdf.php';
     }
     if (!class_exists('TCPDF')) {
         http_response_code(500);
         echo 'TCPDF non installé.';
         exit;
     }
-    // Audit export
+
+    // --- Audit ---
     try {
         $actor = !empty($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : (apiUser()['id'] ?? null);
         audit_log($actor, 'export', 'users', (int)$usr['id'], $path, 'GET');
     } catch (\Throwable $e) {
     }
-    $pdf = new TCPDF('P', 'mm', 'A4');
-    $pdf->SetCreator('Hill Stock');
-    $pdf->SetAuthor('Hill Stock');
-    $pdf->SetTitle('Fiche utilisateur');
-    $pdf->AddPage();
+
+    // --- Init PDF ---
+    $title = 'Fiche utilisateur';
+    $pdf = function_exists('hill_pdf_create')
+        ? hill_pdf_create($title)
+        : new TCPDF('P', 'mm', 'A4');
+
+    if (!function_exists('hill_pdf_create')) {
+        $pdf->SetCreator('Hill Stock');
+        $pdf->SetAuthor('Hill Stock');
+        $pdf->SetTitle($title);
+        $pdf->AddPage();
+    }
+
+    /* -----------------------------
+       PHOTO (indépendante du flux HTML)
+       ----------------------------- */
+    $photoFS = null;
+    if (!empty($usr['photo_path'])) {
+        $p = (string)$usr['photo_path'];
+        // Essayer plusieurs variantes de chemins vers le FS
+        $candidates = [];
+        if (preg_match('#^/hill_new/public/#', $p)) {
+            $candidates[] = __DIR__ . preg_replace('#^/hill_new/public#', '', $p);
+        }
+        if (preg_match('#^/public/#', $p)) {
+            $candidates[] = __DIR__ . preg_replace('#^/public#', '', $p);
+        }
+        if (preg_match('#^/#', $p)) {
+            $candidates[] = __DIR__ . $p; // ancien format
+        }
+        foreach ($candidates as $cand) {
+            if (is_file($cand)) {
+                $photoFS = $cand;
+                break;
+            }
+        }
+    }
+    // Dessiner une petite photo en haut-droite sans influencer la mise en page
+    if ($photoFS) {
+        // x,y,width,height (mm). Aligné visuellement au niveau des lignes Statut/Nom/Email
+        $pdf->Image($photoFS, 175, 36, 24, 24, '', '', '', true);
+    }
+
+    /* -----------------------------
+       QR CODE (en haut droite)
+       ----------------------------- */
+    $qrValue = "USER-ID:" . $usr['id'] . "\n" .
+        "NAME:" . $usr['name'] . "\n" .
+        "EMAIL:" . $usr['email'];
+
+    $qrStyle = [
+        'border' => 0,
+        'padding' => 0,
+        'fgcolor' => [0, 0, 0],
+        'bgcolor' => false
+    ];
+    // QR réduit et aligné avec le bandeau haut (à droite)
+    // Positionné pour ne pas dépasser le séparateur inférieur
+    $pdf->write2DBarcode($qrValue, 'QRCODE,H', 175, 18, 22, 22, $qrStyle, 'N');
+
+
+    /* -----------------------------
+       HTML PREMIUM
+       ----------------------------- */
     $html = '<style>
-    .card-id{border:2px solid #222;border-radius:14px;padding:16px;font-family:helvetica;max-width:380px;box-shadow:0 3px 8px rgba(0,0,0,.15);}
-    .cid-header{display:flex;align-items:center;gap:12px;margin-bottom:10px;}
-    .cid-photo{width:90px;height:110px;object-fit:cover;border:1px solid #555;border-radius:6px;background:#eee;}
-    .cid-title{font-size:16px;font-weight:bold;letter-spacing:.7px;text-transform:uppercase;}
-    .cid-row{margin:3px 0;font-size:11px;}
-    .cid-label{color:#555;font-weight:bold;}
-    .cid-badge{display:inline-block;padding:3px 8px;border-radius:12px;background:#0d6efd;color:#fff;font-size:10px;}
-    .cid-inactive{background:#b02a37 !important;}
-    .cid-footer{margin-top:10px;font-size:9px;color:#777;}
-    .cid-topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
-    .cid-logo{height:32px;}
+    body{font-family:helvetica;background:#fafafa;}
+    .card-id{
+        background:#fff;
+        border-radius:20px;
+        padding:26px;
+        border:1px solid #ececec;
+    }
+
+    .cid-topbar{
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        margin-bottom:20px;
+        padding-bottom:10px;
+        border-bottom:2px solid #ffc10766;
+    }
+    .cid-logo{height:38px;}
+
+    .cid-title{
+        font-size:22px;
+        font-weight:bold;
+        margin-bottom:12px;
+        text-transform:uppercase;
+    }
+
+    .cid-grid{display:block}
+
+    /* Données */
+    .cid-col-left{flex:1;}
+    
+    .cid-row{margin:7px 0;font-size:13px;}
+    .cid-label{font-weight:600;color:#333;min-width:150px;display:inline-block;}
+
+    /* Photo ronde */
+    .cid-photo{
+        width:150px;
+        height:150px;
+        border-radius:50%;
+        object-fit:cover;
+        border:3px solid #ffc10755;
+        background:#f1f1f1;
+    }
+
+    /* Badge */
+    .cid-badge{
+        background:#ffc107;
+        color:#111;
+        padding:4px 14px;
+        border-radius:14px;
+        font-weight:bold;
+        font-size:11px;
+    }
+    .cid-inactive{background:#b02a37 !important;color:#fff;}
+
+    .cid-role{
+        background:#212121;
+        color:#fff;
+        padding:4px 10px;
+        border-radius:14px;
+        font-size:10px;
+        margin-left:10px;
+    }
+
+    .cid-footer{
+        margin-top:25px;
+        padding-top:12px;
+        text-align:center;
+        font-size:10px;
+        border-top:1px dashed #ddd;
+    }
     </style>';
-    // Logo si présent (public/assets/img/logo.png)
-    $logoPathFS = __DIR__ . '/assets/img/logo.png';
-    $logoTag = is_file($logoPathFS) ? '<img class="cid-logo" src="/assets/img/logo.png" />' : '<div style="font-size:12px;font-weight:bold">HILL STOCK</div>';
-    $photo = $usr['photo_path'] ?? '';
+
+    /* PHOTO HTML (alignée à droite) */
+    // Résolution du chemin web/fs
+    $photoWeb = null;
+    if (!empty($usr['photo_path'])) {
+        $p = (string)$usr['photo_path'];
+        if (preg_match('#^/public/uploads/#', $p)) {
+            // ex: /public/uploads/... -> web /uploads/...
+            $photoWeb = preg_replace('#^/public/#', '/', $p);
+        } elseif (preg_match('#^/hill_new/public/uploads/#', $p)) {
+            // ex: /hill_new/public/uploads/... -> web /uploads/...
+            $photoWeb = preg_replace('#^/hill_new/public/#', '/', $p);
+        } elseif (preg_match('#^/uploads/#', $p)) {
+            $photoWeb = $p;
+        }
+    }
+
+    // Photo gérée via TCPDF::Image pour ne pas impacter l'alignement; pas d'injection HTML
     $photoTag = '';
-    if ($photo && preg_match('#^/#', $photo)) {
-        $fs = __DIR__ . $photo; // photo path relative to public
-        if (is_file($fs)) {
-            // embed as image file
-            $pdf->Image($fs, 20, 40, 30, 37, '', '', '', true); // also place separately for print quality
-            $photoTag = '<img class="cid-photo" src="' . htmlspecialchars($photo) . '" />';
-        } else {
-            $photoTag = '<div class="cid-photo"></div>';
-        }
-    } else {
-        $photoTag = '<div class="cid-photo"></div>';
-    }
-    $badgeClass = 'cid-badge' . ((int)$usr['active'] === 1 ? '' : ' cid-inactive');
-    $activeLabel = (int)$usr['active'] === 1 ? 'ACTIF' : 'INACTIF';
-    $html .= '<div class="card-id">'
-        . '<div class="cid-topbar">' . $logoTag . '<div style="font-size:10px;color:#666">ID: ' . htmlspecialchars((string)$usr['id']) . '</div></div>'
-        . '<div class="cid-header">' . $photoTag . '<div><div class="cid-title">IDENTIFICATION UTILISATEUR</div><div class="cid-row"><span class="' . $badgeClass . '">' . $activeLabel . '</span></div></div></div>'
-        . '<div class="cid-row"><span class="cid-label">Nom:</span> ' . htmlspecialchars($usr['name'] ?? '') . '</div>'
-        . '<div class="cid-row"><span class="cid-label">Email/Login:</span> ' . htmlspecialchars($usr['email'] ?? '') . '</div>'
-        . '<div class="cid-row"><span class="cid-label">Rôle:</span> ' . htmlspecialchars($usr['role'] ?? '') . '</div>'
-        . '<div class="cid-row"><span class="cid-label">Dépôt:</span> ' . htmlspecialchars($dep ? ($dep['name'] . ($dep['code'] ? ' (' . $dep['code'] . ')' : '')) : 'N/A') . '</div>'
-        . '<div class="cid-row"><span class="cid-label">Créé le:</span> ' . htmlspecialchars(substr((string)$usr['created_at'], 0, 19)) . '</div>'
-        . '<div class="cid-row"><span class="cid-label">Mot de passe:</span> (non récupérable, réinitialisation requise)</div>'
-        . '<div class="cid-footer">Document généré automatiquement - Confidentialité requise.</div>'
-        . '</div>';
+
+    /* Badges */
+    $badgeClass = 'cid-badge' . ($usr['active'] == 1 ? '' : ' cid-inactive');
+    $activeLabel = $usr['active'] ? 'ACTIF' : 'INACTIF';
+
+    $roleRaw = isset($usr['role']) ? trim((string)$usr['role']) : '';
+    $map = [
+        'admin' => 'ADMIN',
+        'gerant' => 'GÉRANT',
+        'livreur' => 'LIVREUR'
+    ];
+    $roleText = $roleRaw !== '' ? ($map[strtolower($roleRaw)] ?? strtoupper($roleRaw)) : 'N/A';
+    $roleBadge = '<span class="cid-role">' . htmlspecialchars($roleText) . '</span>';
+
+    /* Logo */
+    $logoFS = __DIR__ . '/assets/images/logos_complet_single.png';
+    $logoTag = is_file($logoFS)
+        ? '<img class="cid-logo" src="/assets/images/logos_complet_single.png" />'
+        : '<div style="font-size:14px;font-weight:bold;">HILL STOCK</div>';
+
+    /* ---- HTML FINAL ---- */
+    $html .= '
+    <div class="card-id">
+
+        <div class="cid-topbar">
+            ' . $logoTag . '
+            <div style="font-size:12px;color:#666">
+                ID : <b>' . htmlspecialchars($usr['id']) . '</b>
+            </div>
+        </div>
+
+        <div class="cid-grid">
+            <div class="cid-col-left">
+                <div class="cid-title">Fiche utilisateur</div>
+
+                <div class="cid-row"><span class="cid-label">Statut :</span>
+                    <span class="' . $badgeClass . '">' . $activeLabel . '</span>
+                </div>
+
+                <div class="cid-row"><span class="cid-label">Nom complet :</span>
+                    ' . htmlspecialchars($usr['name']) . '
+                </div>
+
+                <div class="cid-row"><span class="cid-label">Email / Login :</span>
+                    ' . htmlspecialchars($usr['email']) . '
+                </div>
+            </div>
+        </div>
+
+        <div class="cid-row"><span class="cid-label">Rôle :</span>' . $roleBadge . '</div>
+
+        
+
+        <div class="cid-row"><span class="cid-label">Dépôt :</span>
+            ' . htmlspecialchars($dep ? $dep['name'] . ($dep['code'] ? ' (' . $dep['code'] . ')' : '') : 'N/A') . '
+        </div>
+
+        <div class="cid-row"><span class="cid-label">Créé le :</span>
+            ' . substr($usr['created_at'], 0, 19) . '
+        </div>
+
+        <div class="cid-row"><span class="cid-label">Mot de passe :</span> Non affiché</div>
+
+        <div class="cid-footer">
+            Document interne — HILL Stock • Généré automatiquement
+        </div>
+
+    </div>';
+
     $pdf->writeHTML($html);
-    // QR code: réel si librairie installée (chillerlan/php-qrcode), fallback simplifié sinon
-    $qrData = 'HILLUSER:' . $usr['id'] . ';' . ($usr['email'] ?? '') . ';' . ($usr['role'] ?? '');
-    if (class_exists('chillerlan\\QRCode\\QRCode') && class_exists('chillerlan\\QRCode\\QROptions')) {
-        try {
-            $opts = new chillerlan\QRCode\QROptions([
-                'outputType' => chillerlan\QRCode\QRCode::OUTPUT_MARKUP_SVG,
-                'eccLevel' => chillerlan\QRCode\QRCode::ECC_L,
-                'scale' => 3,
-                'addQuietzone' => true,
-            ]);
-            $qrSVG = (new chillerlan\QRCode\QRCode($opts))->render($qrData);
-            $html .= '<div style="margin-top:12px">' . $qrSVG . '</div>';
-        } catch (\Throwable $e) {
-            $html .= '<div style="margin-top:12px;font-size:7px;color:#b00">QR erreur: ' . htmlspecialchars($e->getMessage()) . '</div>';
-        }
-    } else {
-        $hash = md5($qrData);
-        $size = 21;
-        $bitSeq = '';
-        while (strlen($bitSeq) < $size * $size) {
-            foreach (str_split($hash) as $ch) {
-                $bitSeq .= (hexdec($ch) % 2) ? '1' : '0';
-                if (strlen($bitSeq) >= $size * $size) break;
-            }
-        }
-        $html .= '<div style="margin-top:12px"><table cellspacing="0" cellpadding="0" style="border:1px solid #333">';
-        $idx = 0;
-        for ($y = 0; $y < $size; $y++) {
-            $html .= '<tr>';
-            for ($x = 0; $x < $size; $x++) {
-                $b = $bitSeq[$idx++] === '1';
-                $html .= '<td style="width:3mm;height:3mm;background:' . ($b ? '#000' : '#fff') . '"></td>';
-            }
-            $html .= '</tr>';
-        }
-        $html .= '</table><div style="font-size:7px;color:#666;text-align:center">QR simplifié</div></div>';
-    }
-    $pdf->writeHTML($html);
-    $pdf->Output('fiche_utilisateur_' . $id . '.pdf', 'I');
+    $pdf->Output("fiche_utilisateur_$id.pdf", 'I');
     exit;
 }
+
+
+// Product card export (Fiche produit)
+if ($path === '/api/v1/products/' && isset($_GET['id']) && $_SERVER['REQUEST_METHOD'] === 'GET') {
+    // Normalize to /api/v1/products/{id}/export if needed
+}
+
+// Fiche produit export (cohérente avec fiche utilisateur)
+if (preg_match('#^/api/v1/products/(\d+)/export$#', $path, $pm) && $_SERVER['REQUEST_METHOD'] === 'GET') {
+    $pid = (int)$pm[1];
+    if ($pid <= 0) {
+        http_response_code(422);
+        echo 'ID produit manquant';
+        exit;
+    }
+    // Permissions: products:view requis
+    $actor = !empty($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null;
+    if ($actor) {
+        $u = DB::query('SELECT id, role FROM users WHERE id=:id LIMIT 1', [':id' => $actor])[0] ?? null;
+        if (!$u || !userCan($u, 'products', 'view')) {
+            http_response_code(403);
+            echo 'Accès refusé';
+            exit;
+        }
+    }
+    // Données produit
+    $prod = DB::query('SELECT id, name, code, description, unit_price, photo_path, created_at FROM products WHERE id=:id LIMIT 1', [':id' => $pid])[0] ?? null;
+    if (!$prod) {
+        http_response_code(404);
+        echo 'Produit introuvable';
+        exit;
+    }
+    // Chargement TCPDF
+    if (!class_exists('TCPDF')) {
+        @include_once __DIR__ . '/../vendor/tecnickcom/tcpdf/tcpdf.php';
+    }
+    if (!class_exists('TCPDF')) {
+        http_response_code(500);
+        echo 'TCPDF non installé.';
+        exit;
+    }
+    // Audit
+    try {
+        $actorId = $actor ?: (apiUser()['id'] ?? null);
+        audit_log($actorId, 'export', 'products', (int)$prod['id'], $path, 'GET');
+    } catch (\Throwable $e) {
+    }
+
+    // Init PDF
+    $title = 'Fiche produit';
+    $pdf = function_exists('hill_pdf_create') ? hill_pdf_create($title) : new TCPDF('P', 'mm', 'A4');
+    if (!function_exists('hill_pdf_create')) {
+        $pdf->SetCreator('Hill Stock');
+        $pdf->SetAuthor('Hill Stock');
+        $pdf->SetTitle($title);
+        $pdf->AddPage();
+    }
+
+    // Préparer éventuelle photo produit (dessinée après HTML)
+    $photoFS = null;
+    if (!empty($prod['photo_path'])) {
+        $p = (string)$prod['photo_path'];
+        $candidates = [];
+        if (preg_match('#^/hill_new/public/#', $p)) {
+            $candidates[] = __DIR__ . preg_replace('#^/hill_new/public#', '', $p);
+        }
+        if (preg_match('#^/public/#', $p)) {
+            $candidates[] = __DIR__ . preg_replace('#^/public#', '', $p);
+        }
+        if (preg_match('#^/#', $p)) {
+            $candidates[] = __DIR__ . $p;
+        }
+        foreach ($candidates as $cand) {
+            if (is_file($cand)) {
+                $photoFS = $cand;
+                break;
+            }
+        }
+    }
+    $photoPos = [165, 30, 28, 28];
+
+    // HTML (design harmonisé avec fiche utilisateur)
+    $logoFS = __DIR__ . '/assets/images/logos_complet_single.png';
+    $logoTag = is_file($logoFS)
+        ? '<img class="cid-logo" src="/assets/images/logos_complet_single.png" />'
+        : '<div style="font-size:14px;font-weight:bold;">HILL STOCK</div>';
+
+    $html = '<style>
+    body{font-family:helvetica;background:#fafafa;}
+    .card-id{background:#fff;border-radius:20px;padding:26px;border:1px solid #ececec;}
+    .cid-topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;padding-bottom:10px;border-bottom:2px solid #ffc10766;}
+    .cid-logo{height:38px;}
+    .cid-title{font-size:22px;font-weight:bold;margin-bottom:12px;text-transform:uppercase;}
+    .cid-grid{display:block}
+    .cid-row{margin:7px 0;font-size:13px;}
+    .cid-label{font-weight:600;color:#333;min-width:150px;display:inline-block;}
+    .cid-badge{background:#ffc107;color:#111;padding:4px 14px;border-radius:14px;font-weight:bold;font-size:11px;}
+    .cid-footer{margin-top:25px;padding-top:12px;text-align:center;font-size:10px;border-top:1px dashed #ddd;}
+    </style>';
+
+    $html .= '
+    <div class="card-id">
+        <div class="cid-topbar">
+            ' . $logoTag . '
+            <div style="font-size:12px;color:#666">ID : <b>' . htmlspecialchars($prod['id']) . '</b></div>
+        </div>
+        <div class="cid-title">Fiche produit</div>
+
+        <div class="cid-row"><span class="cid-label">Nom :</span>' . htmlspecialchars($prod['name']) . '</div>
+        <div class="cid-row"><span class="cid-label">Code :</span>' . htmlspecialchars((string)($prod['code'] ?? '')) . '</div>
+        <div class="cid-row"><span class="cid-label">Prix unitaire :</span>' . htmlspecialchars((string)($prod['unit_price'] ?? '')) . '</div>
+        <div class="cid-row"><span class="cid-label">Description :</span>' . htmlspecialchars((string)($prod['description'] ?? '')) . '</div>
+        <div class="cid-row"><span class="cid-label">Créé le :</span>' . substr((string)$prod['created_at'], 0, 19) . '</div>
+
+        <div class="cid-footer">Document interne — HILL Stock • Généré automatiquement</div>
+    </div>';
+
+    // QR code à droite (comme fiche utilisateur)
+    $qrValue = 'PRODUCT-ID:' . $prod['id'] . "\n" . 'NAME:' . $prod['name'] . "\n" . 'CODE:' . ($prod['code'] ?? '');
+    $qrStyle = ['border' => 0, 'padding' => 0, 'fgcolor' => [0, 0, 0], 'bgcolor' => false];
+    $pdf->write2DBarcode($qrValue, 'QRCODE,H', 175, 18, 22, 22, $qrStyle, 'N');
+
+    // Rendu HTML
+    $pdf->writeHTML($html);
+    // Dessiner photo produit après HTML pour être au-dessus
+    if ($photoFS) {
+        $pdf->Image($photoFS, $photoPos[0], $photoPos[1], $photoPos[2], $photoPos[3], '', '', '', true);
+    }
+
+    $pdf->Output('fiche_produit_' . (int)$prod['id'] . '.pdf', 'I');
+    exit;
+}
+
+
 
 // Stock transfers page (alias: /transfers and /transferts)
 if ($path === '/transfers' || $path === '/transferts') {

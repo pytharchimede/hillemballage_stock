@@ -19,6 +19,10 @@ $routeBase = $scriptDir;
         <div style="display:flex; flex-wrap:wrap; gap:.5rem; align-items:center">
             <button type="button" id="ps-export-csv" class="btn secondary"><i class="fa fa-file-excel-o"></i> Exporter Excel</button>
             <button type="button" id="ps-export-pdf" class="btn secondary"><i class="fa fa-file-pdf-o"></i> Exporter PDF</button>
+            <div style="display:flex; gap:.4rem; align-items:center">
+                <input type="number" id="ps-fiche-id" class="form-control compact" placeholder="ID produit" style="width:120px" />
+                <a id="ps-fiche-btn" class="btn secondary" target="_blank" title="Fiche produit (PDF)"><i class="fa fa-id-card-o"></i> Fiche produit (PDF)</a>
+            </div>
             <a class="btn" id="btn-new-product" data-entity="products" data-action="edit" href="<?= $routeBase ?>/products/new"><i class="fa fa-plus"></i> Nouveau produit</a>
             <button class="btn secondary" id="fix-img-btn" title="Normaliser les chemins d'images (admin)" data-role="admin-only"><i class="fa fa-wrench"></i> Normaliser images</button>
             <span id="fix-img-status" class="muted" style="display:none"></span>
@@ -27,6 +31,24 @@ $routeBase = $scriptDir;
     <div class="muted" id="ps-hint" style="margin-top:.25rem"></div>
     <script>
         window.ROUTE_BASE = "<?= $routeBase ?>";
+        (function() {
+            const idInput = document.getElementById('ps-fiche-id');
+            const btn = document.getElementById('ps-fiche-btn');
+            const base = window.ROUTE_BASE || '';
+
+            function updateHref() {
+                const id = parseInt(idInput.value || '0', 10);
+                if (id > 0) {
+                    btn.href = base + '/api/v1/products/' + id + '/export';
+                    btn.classList.remove('disabled');
+                } else {
+                    btn.href = 'javascript:void(0)';
+                    btn.classList.add('disabled');
+                }
+            }
+            idInput.addEventListener('input', updateHref);
+            updateHref();
+        })();
     </script>
 </section>
 <section class="card">
