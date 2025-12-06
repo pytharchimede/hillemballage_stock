@@ -928,6 +928,115 @@ if (str_starts_with($path, '/api/v1')) {
         fclose($out);
         exit;
     }
+    // Seller rounds export (csv|pdf) with filters
+    if ($path === '/api/v1/seller-rounds/export' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $u = requireAuth();
+        requirePermission($u, 'seller_rounds', 'view');
+        $status = strtolower(trim($_GET['status'] ?? ''));
+        $depotId = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
+        $userId = isset($_GET['user_id']) && $_GET['user_id'] !== '' ? (int)$_GET['user_id'] : null;
+        $from = trim($_GET['from'] ?? '');
+        $to = trim($_GET['to'] ?? '');
+        $format = strtolower(trim($_GET['format'] ?? 'csv'));
+        $where = [];
+        $params = [];
+        if ($status === 'open' || $status === 'closed') {
+            $where[] = 'sr.status = :st';
+            $params[':st'] = $status;
+        }
+        if ($depotId !== null) {
+            $where[] = 'sr.depot_id = :dep';
+            $params[':dep'] = $depotId;
+        }
+        if ($userId !== null) {
+            $where[] = 'sr.user_id = :uid';
+            $params[':uid'] = $userId;
+        }
+        if ($from !== '') {
+            $where[] = 'sr.assigned_at >= :from';
+            $params[':from'] = $from;
+        }
+        if ($to !== '') {
+            $where[] = 'COALESCE(sr.closed_at, NOW()) <= :to';
+            $params[':to'] = $to;
+        }
+        $sql = 'SELECT sr.id, sr.depot_id, d.name AS depot_name, sr.user_id, u.name AS user_name, sr.status, sr.assigned_at, sr.closed_at, sr.cash_turned_in,
+                (SELECT COALESCE(SUM(si.qty_assigned),0) FROM seller_round_items si WHERE si.round_id = sr.id) AS qty_assigned_total,
+                (SELECT COALESCE(SUM(si.qty_returned),0) FROM seller_round_items si WHERE si.round_id = sr.id) AS qty_returned_total
+                FROM seller_rounds sr LEFT JOIN depots d ON d.id = sr.depot_id LEFT JOIN users u ON u.id = sr.user_id';
+        if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
+        $sql .= ' ORDER BY sr.id DESC';
+        try {
+            $rows = DB::query($sql, $params);
+        } catch (\Throwable $e) {
+            $rows = [];
+        }
+        if ($format === 'csv' || $format === 'xlsx') {
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="seller_rounds_' . date('Ymd_His') . '.csv"');
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['ID', 'Dépôt', 'Livreur', 'Statut', 'Ouverture', 'Clôture', 'Cash remis', 'Qté attribuée', 'Qté retournée']);
+            foreach ($rows as $r) {
+                fputcsv($out, [
+                    (int)$r['id'],
+                    $r['depot_name'] ?? $r['depot_id'],
+                    $r['user_name'] ?? ('#' . $r['user_id']),
+                    $r['status'],
+                    $r['assigned_at'],
+                    $r['closed_at'],
+                    (int)($r['cash_turned_in'] ?? 0),
+                    (int)($r['qty_assigned_total'] ?? 0),
+                    (int)($r['qty_returned_total'] ?? 0),
+                ]);
+            }
+            fclose($out);
+            exit;
+        }
+        if ($format === 'pdf') {
+            header('Content-Type: application/pdf');
+            header('Content-Disposition: attachment; filename="seller_rounds_' . date('Ymd_His') . '.pdf"');
+            try {
+                $pdf = new \TCPDF();
+                $pdf->SetCreator('Hill');
+                $pdf->SetAuthor('Hill');
+                $pdf->SetTitle('Tournées vendeurs');
+                $pdf->AddPage();
+                $title = 'Tournées ' . ($status ?: 'toutes');
+                $html = '<h2>' . htmlspecialchars($title) . '</h2>';
+                $html .= '<table border="1" cellpadding="4"><thead><tr><th>ID</th><th>Dépôt</th><th>Livreur</th><th>Statut</th><th>Ouverture</th><th>Clôture</th><th>Cash remis</th><th>Qté attribuée</th><th>Qté retournée</th></tr></thead><tbody>';
+                foreach ($rows as $r) {
+                    $html .= '<tr><td>' . (int)$r['id'] . '</td><td>' . htmlspecialchars($r['depot_name'] ?? (string)$r['depot_id']) . '</td><td>' . htmlspecialchars($r['user_name'] ?? ('#' . $r['user_id'])) . '</td><td>' . htmlspecialchars((string)$r['status']) . '</td><td>' . htmlspecialchars((string)$r['assigned_at']) . '</td><td>' . htmlspecialchars((string)($r['closed_at'] ?? '')) . '</td><td>' . (int)($r['cash_turned_in'] ?? 0) . '</td><td>' . (int)($r['qty_assigned_total'] ?? 0) . '</td><td>' . (int)($r['qty_returned_total'] ?? 0) . '</td></tr>';
+                }
+                $html .= '</tbody></table>';
+                $pdf->writeHTML($html);
+                $pdf->Output('seller_rounds.pdf', 'I');
+                exit;
+            } catch (\Throwable $e) {
+                echo "%PDF export unavailable: " . $e->getMessage();
+                exit;
+            }
+        }
+        // Default -> csv
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename="seller_rounds_' . date('Ymd_His') . '.csv"');
+        $out = fopen('php://output', 'w');
+        fputcsv($out, ['ID', 'Dépôt', 'Livreur', 'Statut', 'Ouverture', 'Clôture', 'Cash remis', 'Qté attribuée', 'Qté retournée']);
+        foreach ($rows as $r) {
+            fputcsv($out, [
+                (int)$r['id'],
+                $r['depot_name'] ?? $r['depot_id'],
+                $r['user_name'] ?? ('#' . $r['user_id']),
+                $r['status'],
+                $r['assigned_at'],
+                $r['closed_at'],
+                (int)($r['cash_turned_in'] ?? 0),
+                (int)($r['qty_assigned_total'] ?? 0),
+                (int)($r['qty_returned_total'] ?? 0),
+            ]);
+        }
+        fclose($out);
+        exit;
+    }
     // Create client (supports JSON and multipart) - auto-assign depot for non-admin
     if ($path === '/api/v1/clients' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $auth = requireAuth();
@@ -1349,6 +1458,182 @@ if (str_starts_with($path, '/api/v1')) {
         $sale = $saleModel->find($saleId);
         echo json_encode(['sale' => $sale]);
         exit;
+    }
+
+    // --- Seller rounds listing (open/closed) brief ---
+    if ($path === '/api/v1/seller-rounds' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $u = requireAuth();
+        requirePermission($u, 'seller_rounds', 'view');
+        ensure_seller_rounds_tables();
+        $status = strtolower(trim($_GET['status'] ?? ''));
+        $allowed = ['open', 'closed'];
+        if (!in_array($status, $allowed, true)) $status = 'open';
+        $where = ['sr.status = :st'];
+        $params = [':st' => $status];
+        if (!empty($_GET['depot_id'])) {
+            $where[] = 'sr.depot_id = :dep';
+            $params[':dep'] = (int)$_GET['depot_id'];
+        }
+        if (!empty($_GET['user_id'])) {
+            $where[] = 'sr.user_id = :uid';
+            $params[':uid'] = (int)$_GET['user_id'];
+        }
+        if (!empty($_GET['from'])) {
+            $where[] = 'sr.assigned_at >= :from';
+            $params[':from'] = $_GET['from'];
+        }
+        if (!empty($_GET['to'])) {
+            $where[] = ($status === 'closed' ? 'sr.closed_at <= :to' : 'sr.assigned_at <= :to');
+            $params[':to'] = $_GET['to'];
+        }
+        $sql = 'SELECT sr.id,sr.depot_id,sr.user_id,sr.status,sr.cash_turned_in,sr.assigned_at,sr.closed_at,
+                d.name AS depot_name,u.name AS user_name
+                FROM seller_rounds sr
+                LEFT JOIN depots d ON d.id = sr.depot_id
+                LEFT JOIN users u ON u.id = sr.user_id';
+        if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
+        $sql .= ' ORDER BY sr.id DESC LIMIT 200';
+        $rows = DB::query($sql, $params);
+        // Attach brief items per round
+        $ids = array_map(fn($r) => (int)$r['id'], $rows);
+        $itemsByRound = [];
+        if ($ids) {
+            $in = implode(',', array_map('intval', $ids));
+            try {
+                $its = DB::query('SELECT sri.round_id,sri.product_id,sri.qty_assigned,sri.qty_returned,p.name AS product_name FROM seller_round_items sri LEFT JOIN products p ON p.id=sri.product_id WHERE sri.round_id IN (' . $in . ')');
+                foreach ($its as $it) {
+                    $rid = (int)$it['round_id'];
+                    if (!isset($itemsByRound[$rid])) $itemsByRound[$rid] = [];
+                    $itemsByRound[$rid][] = [
+                        'product_id' => (int)$it['product_id'],
+                        'name' => $it['product_name'] ?? null,
+                        'qty_assigned' => (int)$it['qty_assigned'],
+                        'qty_returned' => (int)$it['qty_returned'],
+                    ];
+                }
+            } catch (\Throwable $e) { /* ignore */
+            }
+        }
+        foreach ($rows as &$r) {
+            $r['items'] = $itemsByRound[(int)$r['id']] ?? [];
+        }
+        echo json_encode($rows);
+        exit;
+    }
+
+    // Seller round stats (items + totals)
+    if (preg_match('#^/api/v1/seller-rounds/(\d+)/stats$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $u = requireAuth();
+        requirePermission($u, 'seller_rounds', 'view');
+        ensure_seller_rounds_tables();
+        $rid = (int)$m[1];
+        $round = DB::query('SELECT * FROM seller_rounds WHERE id=:id', [':id' => $rid])[0] ?? null;
+        if (!$round) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Not found']);
+            exit;
+        }
+        $items = DB::query('SELECT sri.product_id,sri.qty_assigned,sri.qty_returned,p.name AS product_name FROM seller_round_items sri LEFT JOIN products p ON p.id=sri.product_id WHERE sri.round_id=:r', [':r' => $rid]);
+        $outItems = [];
+        foreach ($items as $it) {
+            $sold = get_round_sold_qty($round, (int)$it['product_id']);
+            $outItems[] = [
+                'product_id' => (int)$it['product_id'],
+                'name' => $it['product_name'] ?? null,
+                'qty_assigned' => (int)$it['qty_assigned'],
+                'qty_returned' => (int)$it['qty_returned'],
+                'qty_sold' => (int)$sold,
+                'qty_remaining' => max(0, (int)$it['qty_assigned'] - (int)$it['qty_returned'] - (int)$sold),
+            ];
+        }
+        // Totals
+        $params = [':u' => (int)$round['user_id'], ':d' => (int)$round['depot_id'], ':from' => $round['assigned_at']];
+        $whereTo = '';
+        if (!empty($round['closed_at'])) {
+            $whereTo = ' AND s.sold_at <= :to';
+            $params[':to'] = $round['closed_at'];
+        }
+        $salesAmt = (int)(DB::query('SELECT COALESCE(SUM(s.total_amount),0) v FROM sales s WHERE s.user_id=:u AND s.depot_id=:d AND s.sold_at >= :from' . $whereTo, $params)[0]['v'] ?? 0);
+        $paymentsAmt = (int)(DB::query('SELECT COALESCE(SUM(sp.amount),0) v FROM sale_payments sp JOIN sales s ON s.id=sp.sale_id WHERE s.user_id=:u AND s.depot_id=:d AND sp.paid_at >= :from' . ($whereTo ? ' AND sp.paid_at <= :to' : ''), $params)[0]['v'] ?? 0);
+        echo json_encode(['items' => $outItems, 'totals' => ['sales_amount' => $salesAmt, 'payments_amount' => $paymentsAmt]]);
+        exit;
+    }
+
+    // Seller rounds export
+    if ($path === '/api/v1/seller-rounds/export' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $u = requireAuth();
+        requirePermission($u, 'seller_rounds', 'view');
+        ensure_seller_rounds_tables();
+        $status = strtolower(trim($_GET['status'] ?? 'closed'));
+        $format = strtolower(trim($_GET['format'] ?? 'csv'));
+        $where = ['sr.status = :st'];
+        $params = [':st' => in_array($status, ['open', 'closed'], true) ? $status : 'closed'];
+        if (!empty($_GET['depot_id'])) {
+            $where[] = 'sr.depot_id = :dep';
+            $params[':dep'] = (int)$_GET['depot_id'];
+        }
+        if (!empty($_GET['user_id'])) {
+            $where[] = 'sr.user_id = :uid';
+            $params[':uid'] = (int)$_GET['user_id'];
+        }
+        if (!empty($_GET['from'])) {
+            $where[] = 'sr.assigned_at >= :from';
+            $params[':from'] = $_GET['from'];
+        }
+        if (!empty($_GET['to'])) {
+            $where[] = ($params[':st'] === 'closed' ? 'sr.closed_at <= :to' : 'sr.assigned_at <= :to');
+            $params[':to'] = $_GET['to'];
+        }
+        $sql = 'SELECT sr.id,sr.depot_id,sr.user_id,sr.status,sr.cash_turned_in,sr.assigned_at,sr.closed_at,
+                d.name AS depot_name,u.name AS user_name
+                FROM seller_rounds sr
+                LEFT JOIN depots d ON d.id = sr.depot_id
+                LEFT JOIN users u ON u.id = sr.user_id';
+        if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
+        $sql .= ' ORDER BY sr.id DESC LIMIT 1000';
+        $rows = DB::query($sql, $params);
+        // Export CSV (default) or PDF
+        if ($format === 'csv' || $format === 'xlsx') {
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="rounds_' . date('Ymd_His') . '.csv"');
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['#', 'Dépôt', 'Livreur', 'Statut', 'Assignée', 'Clôturée', 'Cash']);
+            foreach ($rows as $r) {
+                fputcsv($out, [
+                    $r['id'],
+                    $r['depot_name'] ?? $r['depot_id'],
+                    $r['user_name'] ?? $r['user_id'],
+                    $r['status'],
+                    $r['assigned_at'],
+                    $r['closed_at'],
+                    (int)($r['cash_turned_in'] ?? 0),
+                ]);
+            }
+            fclose($out);
+            exit;
+        } elseif ($format === 'pdf') {
+            header('Content-Type: application/pdf');
+            header('Content-Disposition: attachment; filename="rounds_' . date('Ymd_His') . '.pdf"');
+            try {
+                $pdf = new \TCPDF();
+                $pdf->AddPage();
+                $html = '<h2>Tournées ' . htmlspecialchars($params[':st']) . '</h2><table border="1" cellpadding="4"><thead><tr><th>#</th><th>Dépôt</th><th>Livreur</th><th>Statut</th><th>Assignée</th><th>Clôturée</th><th>Cash</th></tr></thead><tbody>';
+                foreach ($rows as $r) {
+                    $html .= '<tr><td>' . (int)$r['id'] . '</td><td>' . htmlspecialchars($r['depot_name'] ?? (string)$r['depot_id']) . '</td><td>' . htmlspecialchars($r['user_name'] ?? (string)$r['user_id']) . '</td><td>' . htmlspecialchars($r['status']) . '</td><td>' . htmlspecialchars((string)$r['assigned_at']) . '</td><td>' . htmlspecialchars((string)($r['closed_at'] ?? '')) . '</td><td>' . (int)($r['cash_turned_in'] ?? 0) . '</td></tr>';
+                }
+                $html .= '</tbody></table>';
+                $pdf->writeHTML($html);
+                $pdf->Output('rounds.pdf', 'I');
+                exit;
+            } catch (\Throwable $e) {
+                echo 'PDF export unavailable: ' . $e->getMessage();
+                exit;
+            }
+        } else {
+            http_response_code(422);
+            echo json_encode(['error' => 'Unsupported format']);
+            exit;
+        }
     }
     // Client balance endpoint
     if (preg_match('#^/api/v1/clients/(\d+)/balance$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {

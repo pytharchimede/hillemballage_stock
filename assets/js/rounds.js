@@ -28,6 +28,20 @@
   const elMsg = document.getElementById("sr-create-msg");
   const elOpen = document.getElementById("sr-open");
   const elClosed = document.getElementById("sr-closed");
+  const elSearchOpen = document.getElementById("sr-search-open");
+  const elOpenDepot = document.getElementById("sr-search-open-depot");
+  const elOpenSeller = document.getElementById("sr-search-open-seller");
+  const elOpenFrom = document.getElementById("sr-search-open-from");
+  const elOpenTo = document.getElementById("sr-search-open-to");
+  const elSearchClosed = document.getElementById("sr-search-closed");
+  const elClosedDepot = document.getElementById("sr-search-closed-depot");
+  const elClosedSeller = document.getElementById("sr-search-closed-seller");
+  const elClosedFrom = document.getElementById("sr-search-closed-from");
+  const elClosedTo = document.getElementById("sr-search-closed-to");
+  const btnExportOpenCsv = document.getElementById("sr-export-open-csv");
+  const btnExportOpenPdf = document.getElementById("sr-export-open-pdf");
+  const btnExportClosedCsv = document.getElementById("sr-export-closed-csv");
+  const btnExportClosedPdf = document.getElementById("sr-export-closed-pdf");
 
   const items = [];
 
@@ -48,6 +62,18 @@
         o.value = d.id;
         o.textContent = `${d.name}${d.code ? " (" + d.code + ")" : ""}`;
         elDepot.appendChild(o);
+        if (elOpenDepot) {
+          const o2 = document.createElement("option");
+          o2.value = d.id;
+          o2.textContent = `${d.name}${d.code ? " (" + d.code + ")" : ""}`;
+          elOpenDepot.appendChild(o2);
+        }
+        if (elClosedDepot) {
+          const o3 = document.createElement("option");
+          o3.value = d.id;
+          o3.textContent = `${d.name}${d.code ? " (" + d.code + ")" : ""}`;
+          elClosedDepot.appendChild(o3);
+        }
       });
     } catch (_) {
       elDepot.innerHTML = '<option value="">—</option>';
@@ -68,15 +94,63 @@
       ph.value = "";
       ph.textContent = "Sélectionner un livreur";
       elSeller.appendChild(ph);
+      if (elOpenSeller) {
+        elOpenSeller.innerHTML = "";
+        const ph2 = document.createElement("option");
+        ph2.value = "";
+        ph2.textContent = "— Tous les livreurs —";
+        elOpenSeller.appendChild(ph2);
+      }
+      if (elClosedSeller) {
+        elClosedSeller.innerHTML = "";
+        const ph3 = document.createElement("option");
+        ph3.value = "";
+        ph3.textContent = "— Tous les livreurs —";
+        elClosedSeller.appendChild(ph3);
+      }
       rows.forEach((u) => {
         const o = document.createElement("option");
         o.value = u.id;
         o.textContent = `${u.name} (#${u.id})`;
         elSeller.appendChild(o);
+        if (elOpenSeller) {
+          const o2 = document.createElement("option");
+          o2.value = u.id;
+          o2.textContent = `${u.name} (#${u.id})`;
+          elOpenSeller.appendChild(o2);
+        }
+        if (elClosedSeller) {
+          const o3 = document.createElement("option");
+          o3.value = u.id;
+          o3.textContent = `${u.name} (#${u.id})`;
+          elClosedSeller.appendChild(o3);
+        }
       });
     } catch (_) {
       elSeller.innerHTML = '<option value="">(aucun utilisateur)</option>';
     }
+  }
+
+  // Populate search selects initially
+  if (elOpenDepot || elClosedDepot || elOpenSeller || elClosedSeller) {
+    loadDepots().then(() => loadSellers());
+  }
+
+  // When search depot changes, reload sellers for that depot
+  function syncMainDepot(val) {
+    if (elDepot) elDepot.value = val || "";
+  }
+  if (elOpenDepot) {
+    elOpenDepot.addEventListener("change", () => {
+      syncMainDepot(elOpenDepot.value);
+      loadSellers();
+    });
+  }
+  if (elClosedDepot) {
+    elClosedDepot.addEventListener("change", () => {
+      syncMainDepot(elClosedDepot.value);
+      loadSellers();
+    });
   }
 
   async function loadProducts() {
@@ -194,19 +268,43 @@
   }
 
   async function loadRounds() {
+    const depOpen = parseInt(elOpenDepot?.value || "", 10) || "";
+    const sellerOpen = parseInt(elOpenSeller?.value || "", 10) || "";
+    const fromOpen = (elOpenFrom?.value || "").trim();
+    const toOpen = (elOpenTo?.value || "").trim();
+    const depClosed = parseInt(elClosedDepot?.value || "", 10) || "";
+    const sellerClosed = parseInt(elClosedSeller?.value || "", 10) || "";
+    const fromClosed = (elClosedFrom?.value || "").trim();
+    const toClosed = (elClosedTo?.value || "").trim();
+    const qOpen = new URLSearchParams();
+    const qClosed = new URLSearchParams();
+    if (depOpen) qOpen.set("depot_id", String(depOpen));
+    if (sellerOpen) qOpen.set("user_id", String(sellerOpen));
+    if (fromOpen) qOpen.set("from", fromOpen);
+    if (toOpen) qOpen.set("to", toOpen);
+    if (depClosed) qClosed.set("depot_id", String(depClosed));
+    if (sellerClosed) qClosed.set("user_id", String(sellerClosed));
+    if (fromClosed) qClosed.set("from", fromClosed);
+    if (toClosed) qClosed.set("to", toClosed);
     try {
-      const r1 = await fetch(BASE + "/api/v1/seller-rounds?status=open", {
-        headers: authHeaders(),
-      });
+      const r1 = await fetch(
+        BASE + "/api/v1/seller-rounds?status=open&" + qOpen.toString(),
+        {
+          headers: authHeaders(),
+        }
+      );
       const open = (await r1.json()) || [];
       renderRounds(elOpen, open, true);
     } catch (_) {
       elOpen.textContent = "Erreur";
     }
     try {
-      const r2 = await fetch(BASE + "/api/v1/seller-rounds?status=closed", {
-        headers: authHeaders(),
-      });
+      const r2 = await fetch(
+        BASE + "/api/v1/seller-rounds?status=closed&" + qClosed.toString(),
+        {
+          headers: authHeaders(),
+        }
+      );
       const closed = (await r2.json()) || [];
       renderRounds(elClosed, closed, false);
     } catch (_) {
@@ -219,27 +317,53 @@
       container.innerHTML = '<div class="muted">Aucune donnée</div>';
       return;
     }
-    let h =
-      '<table class="excel"><thead><tr><th>#</th><th>Dépôt</th><th>Livreur</th><th>Statut</th><th>Assignée</th><th>Cash</th><th>Actions</th></tr></thead><tbody>';
+    let h = '<div class="cards">';
     rows.forEach((r) => {
-      h += `<tr><td>${r.id}</td><td>${r.depot_name || r.depot_id}</td><td>${
-        r.user_name || "#" + r.user_id
-      }</td><td>${r.status}</td><td>${(r.assigned_at || "")
-        .toString()
-        .slice(0, 19)}</td><td>${r.cash_turned_in || 0}</td><td>`;
-      if (closable)
-        h += `<button class="btn small" data-close="${r.id}">Clôturer</button>`;
-      h += `</td></tr>`;
+      const sellerName = r.user_name || "#" + r.user_id;
+      const depotName = r.depot_name || r.depot_id;
+      const photo = r.user_photo_path || r.photo_path || r.avatar_url || null;
+      h += `<div class="card round-card" style="padding:12px;display:flex;gap:12px;align-items:flex-start">`;
+      h += `<div class="avatar" style="width:56px;height:56px;border-radius:50%;overflow:hidden;background:#eee;flex-shrink:0">`;
+      if (photo) {
+        h += `<img src="${photo}" alt="${sellerName}" style="width:100%;height:100%;object-fit:cover" />`;
+      } else {
+        h += `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#999">${String(
+          sellerName
+        ).slice(0, 1)}</div>`;
+      }
+      h += `</div>`;
+      h += `<div style="flex:1">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div style="font-weight:600">${sellerName}</div>
+            <div class="muted" style="font-size:12px">Dépôt: ${depotName} • #${
+        r.id
+      }</div>
+          </div>
+          <div class="muted" style="font-size:12px">${(r.assigned_at || "")
+            .toString()
+            .slice(0, 19)}</div>
+        </div>`;
       if (Array.isArray(r.items) && r.items.length) {
         h +=
-          `<tr><td colspan="7"><div class="muted">Articles: ` +
+          `<div class="muted" style="margin-top:6px">` +
           r.items
-            .map((i) => `${i.name || "#" + i.product_id} x ${i.qty_assigned}`)
+            .map(
+              (i) =>
+                `${i.name && i.name.trim() ? i.name : "#" + i.product_id} x ${
+                  i.qty_assigned
+                }`
+            )
             .join(", ") +
-          `</div></td></tr>`;
+          `</div>`;
       }
+      h += `<div style="margin-top:8px;display:flex;gap:8px;justify-content:flex-end">`;
+      if (closable) {
+        h += `<button class="btn small" data-close="${r.id}">Clôturer</button>`;
+      }
+      h += `</div></div></div>`;
     });
-    h += "</tbody></table>";
+    h += "</div>";
     container.innerHTML = h;
     if (closable) {
       container.querySelectorAll("button[data-close]").forEach((b) => {
@@ -249,6 +373,70 @@
       });
     }
   }
+  // Search submit per column
+  if (elSearchOpen) {
+    elSearchOpen.addEventListener("submit", function (e) {
+      e.preventDefault();
+      loadRounds();
+    });
+  }
+  if (elSearchClosed) {
+    elSearchClosed.addEventListener("submit", function (e) {
+      e.preventDefault();
+      loadRounds();
+    });
+  }
+
+  // Export buttons
+  function doExport(status, format) {
+    const isOpen = status === "open";
+    const dep =
+      parseInt(
+        (isOpen ? elOpenDepot?.value : elClosedDepot?.value) || "",
+        10
+      ) || "";
+    const seller =
+      parseInt(
+        (isOpen ? elOpenSeller?.value : elClosedSeller?.value) || "",
+        10
+      ) || "";
+    const from = (
+      (isOpen ? elOpenFrom?.value : elClosedFrom?.value) || ""
+    ).trim();
+    const to = ((isOpen ? elOpenTo?.value : elClosedTo?.value) || "").trim();
+    const tok =
+      localStorage.getItem("api_token") || getCookie("api_token") || "";
+    const qs = new URLSearchParams();
+    qs.set("status", status);
+    qs.set("format", format || "csv");
+    if (dep) qs.set("depot_id", String(dep));
+    if (seller) qs.set("user_id", String(seller));
+    if (from) qs.set("from", from);
+    if (to) qs.set("to", to);
+    if (tok) qs.set("api_token", tok);
+    window.location.href =
+      BASE + "/api/v1/seller-rounds/export?" + qs.toString();
+  }
+  if (btnExportOpenCsv)
+    btnExportOpenCsv.addEventListener("click", function (e) {
+      e.preventDefault();
+      doExport("open", "csv");
+    });
+  if (btnExportOpenPdf)
+    btnExportOpenPdf.addEventListener("click", function (e) {
+      e.preventDefault();
+      doExport("open", "pdf");
+    });
+  if (btnExportClosedCsv)
+    btnExportClosedCsv.addEventListener("click", function (e) {
+      e.preventDefault();
+      doExport("closed", "csv");
+    });
+  if (btnExportClosedPdf)
+    btnExportClosedPdf.addEventListener("click", function (e) {
+      e.preventDefault();
+      doExport("closed", "pdf");
+    });
 
   function openCloseDialog(roundId) {
     const dlg = document.createElement("div");
