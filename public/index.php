@@ -1037,6 +1037,94 @@ if (str_starts_with($path, '/api/v1')) {
         fclose($out);
         exit;
     }
+    // Single seller round export (csv|pdf)
+    if (preg_match('#^/api/v1/seller-rounds/(\d+)/export$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $u = requireAuth();
+        requirePermission($u, 'seller_rounds', 'view');
+        $roundId = (int)$m[1];
+        $format = strtolower(trim($_GET['format'] ?? 'pdf'));
+        // Load round header
+        $round = DB::query('SELECT sr.id, sr.depot_id, d.name AS depot_name, sr.user_id, u.name AS user_name, u.photo_path AS user_photo_path, sr.status, sr.assigned_at, sr.closed_at, sr.cash_turned_in FROM seller_rounds sr LEFT JOIN depots d ON d.id = sr.depot_id LEFT JOIN users u ON u.id = sr.user_id WHERE sr.id = :id', [':id' => $roundId])[0] ?? null;
+        if (!$round) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Not found']);
+            exit;
+        }
+        // Load items with product names
+        $items = DB::query('SELECT si.product_id, p.name AS name, si.qty_assigned, si.qty_returned FROM seller_round_items si LEFT JOIN products p ON p.id = si.product_id WHERE si.round_id = :r', [':r' => $roundId]);
+        // Compute sold quantities and totals
+        $soldRows = DB::query('SELECT si.product_id, COALESCE(SUM(si.quantity),0) qty_sold FROM sale_items si JOIN sales s ON s.id=si.sale_id WHERE s.user_id=:u AND s.depot_id=:d AND s.sold_at >= :from AND (s.sold_at <= COALESCE(:to, NOW()) OR :to IS NULL) GROUP BY si.product_id', [
+            ':u' => (int)$round['user_id'],
+            ':d' => (int)$round['depot_id'],
+            ':from' => $round['assigned_at'],
+            ':to' => $round['closed_at']
+        ]);
+        $soldMap = [];
+        foreach ($soldRows as $sr) {
+            $soldMap[(int)$sr['product_id']] = (int)$sr['qty_sold'];
+        }
+        $paymentsAmt = DB::query('SELECT COALESCE(SUM(sp.amount),0) v FROM sale_payments sp JOIN sales s ON s.id=sp.sale_id WHERE s.user_id=:u AND s.depot_id=:d AND sp.paid_at >= :from AND (sp.paid_at <= COALESCE(:to, NOW()) OR :to IS NULL)', [
+            ':u' => (int)$round['user_id'],
+            ':d' => (int)$round['depot_id'],
+            ':from' => $round['assigned_at'],
+            ':to' => $round['closed_at']
+        ])[0]['v'] ?? 0;
+
+        if ($format === 'csv' || $format === 'xlsx') {
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="seller_round_' . (int)$roundId . '_' . date('Ymd_His') . '.csv"');
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['Tournée', (int)$round['id'], 'Dépôt', $round['depot_name'] ?? $round['depot_id'], 'Livreur', $round['user_name'] ?? ('#' . $round['user_id']), 'Statut', $round['status'], 'Ouverture', $round['assigned_at'], 'Clôture', $round['closed_at']]);
+            fputcsv($out, []);
+            fputcsv($out, ['Produit', 'Attribué', 'Vendu', 'Retourné', 'Reste']);
+            foreach ($items as $it) {
+                $assigned = (int)$it['qty_assigned'];
+                $sold = (int)($soldMap[(int)$it['product_id']] ?? 0);
+                $returned = (int)$it['qty_returned'];
+                $remaining = max(0, $assigned - $sold - $returned);
+                fputcsv($out, [
+                    $it['name'] ?? ('#' . $it['product_id']),
+                    $assigned,
+                    $sold,
+                    $returned,
+                    $remaining,
+                ]);
+            }
+            fputcsv($out, []);
+            fputcsv($out, ['Total paiements', (int)$paymentsAmt, 'Cash remis', (int)($round['cash_turned_in'] ?? 0)]);
+            fclose($out);
+            exit;
+        }
+        // PDF
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: attachment; filename="seller_round_' . (int)$roundId . '_' . date('Ymd_His') . '.pdf"');
+        try {
+            $pdf = new \TCPDF();
+            $pdf->SetCreator('Hill');
+            $pdf->SetAuthor('Hill');
+            $pdf->SetTitle('Tournée #' . (int)$roundId);
+            $pdf->AddPage();
+            $title = 'Tournée #' . (int)$roundId . ' — ' . htmlspecialchars($round['user_name'] ?? ('#' . $round['user_id'])) . ' / ' . htmlspecialchars($round['depot_name'] ?? (string)$round['depot_id']);
+            $html = '<h2>' . $title . '</h2>';
+            $html .= '<div>Statut: ' . htmlspecialchars((string)$round['status']) . ' • Ouverture: ' . htmlspecialchars((string)$round['assigned_at']) . ' • Clôture: ' . htmlspecialchars((string)($round['closed_at'] ?? '')) . '</div>';
+            $html .= '<h3>Articles</h3><table border="1" cellpadding="4"><thead><tr><th>Produit</th><th>Attribué</th><th>Vendu</th><th>Retourné</th><th>Reste</th></tr></thead><tbody>';
+            foreach ($items as $it) {
+                $assigned = (int)$it['qty_assigned'];
+                $sold = (int)($soldMap[(int)$it['product_id']] ?? 0);
+                $returned = (int)$it['qty_returned'];
+                $remaining = max(0, $assigned - $sold - $returned);
+                $html .= '<tr><td>' . htmlspecialchars($it['name'] ?? ('#' . $it['product_id'])) . '</td><td>' . $assigned . '</td><td>' . $sold . '</td><td>' . $returned . '</td><td>' . $remaining . '</td></tr>';
+            }
+            $html .= '</tbody></table>';
+            $html .= '<h3>Totaux</h3><div>Paiements: ' . (int)$paymentsAmt . ' FCFA • Cash remis: ' . (int)($round['cash_turned_in'] ?? 0) . ' FCFA</div>';
+            $pdf->writeHTML($html);
+            $pdf->Output('seller_round_' . (int)$roundId . '.pdf', 'I');
+            exit;
+        } catch (\Throwable $e) {
+            echo "%PDF export unavailable: " . $e->getMessage();
+            exit;
+        }
+    }
     // Create client (supports JSON and multipart) - auto-assign depot for non-admin
     if ($path === '/api/v1/clients' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $auth = requireAuth();

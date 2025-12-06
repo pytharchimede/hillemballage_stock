@@ -358,6 +358,8 @@
           `</div>`;
       }
       h += `<div style="margin-top:8px;display:flex;gap:8px;justify-content:flex-end">`;
+      h += `<button class="btn small" data-exp-csv="${r.id}">Export CSV</button>`;
+      h += `<button class="btn small" data-exp-pdf="${r.id}">Export PDF</button>`;
       if (closable) {
         h += `<button class="btn small" data-close="${r.id}">Clôturer</button>`;
       }
@@ -365,6 +367,31 @@
     });
     h += "</div>";
     container.innerHTML = h;
+    // Per-card export handlers
+    container.querySelectorAll("button[data-exp-csv]").forEach((b) => {
+      b.addEventListener("click", () => {
+        const id = parseInt(b.getAttribute("data-exp-csv"), 10);
+        const tok =
+          localStorage.getItem("api_token") || getCookie("api_token") || "";
+        const qs = new URLSearchParams();
+        qs.set("format", "csv");
+        if (tok) qs.set("api_token", tok);
+        window.location.href =
+          BASE + `/api/v1/seller-rounds/${id}/export?` + qs.toString();
+      });
+    });
+    container.querySelectorAll("button[data-exp-pdf]").forEach((b) => {
+      b.addEventListener("click", () => {
+        const id = parseInt(b.getAttribute("data-exp-pdf"), 10);
+        const tok =
+          localStorage.getItem("api_token") || getCookie("api_token") || "";
+        const qs = new URLSearchParams();
+        qs.set("format", "pdf");
+        if (tok) qs.set("api_token", tok);
+        window.location.href =
+          BASE + `/api/v1/seller-rounds/${id}/export?` + qs.toString();
+      });
+    });
     if (closable) {
       container.querySelectorAll("button[data-close]").forEach((b) => {
         b.addEventListener("click", () =>
