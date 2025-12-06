@@ -831,6 +831,103 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode($rows);
         exit;
     }
+    // Clients export (csv|pdf|xlsx->csv) - scoped by role/depot
+    if ($path === '/api/v1/clients/export' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $u = requireAuth();
+        requirePermission($u, 'clients', 'view');
+        ensure_clients_depot_column();
+        $role = (string)($u['role'] ?? '');
+        $userDepotId = (int)($u['depot_id'] ?? 0);
+        $q = trim($_GET['q'] ?? '');
+        $format = strtolower(trim($_GET['format'] ?? 'csv'));
+        $where = [];
+        $params = [];
+        if ($q !== '') {
+            $where[] = '(c.name LIKE :q OR c.phone LIKE :q)';
+            $params[':q'] = '%' . $q . '%';
+        }
+        if ($role !== 'admin') {
+            if ($userDepotId <= 0) {
+                http_response_code(403);
+                echo json_encode(['error' => 'Forbidden']);
+                exit;
+            }
+            $where[] = 'c.depot_id = :dep';
+            $params[':dep'] = $userDepotId;
+        } else {
+            if (isset($_GET['depot_id']) && $_GET['depot_id'] !== '') {
+                $where[] = 'c.depot_id = :dep';
+                $params[':dep'] = (int)$_GET['depot_id'];
+            }
+        }
+        $sql = 'SELECT c.id,c.name,c.phone,c.address,c.depot_id,
+            (SELECT COALESCE(SUM(s.total_amount) - SUM(s.amount_paid), 0) FROM sales s WHERE s.client_id = c.id) AS balance
+            FROM clients c';
+        if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
+        $sql .= ' ORDER BY c.id DESC';
+        $rows = DB::query($sql, $params);
+
+        if ($format === 'csv' || $format === 'xlsx') {
+            // For xlsx, return csv (simple and compatible)
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="clients_' . date('Ymd_His') . '.csv"');
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['ID', 'Nom', 'Téléphone', 'Adresse', 'Depot', 'Solde']);
+            foreach ($rows as $r) {
+                fputcsv($out, [
+                    $r['id'],
+                    $r['name'],
+                    $r['phone'],
+                    $r['address'],
+                    $r['depot_id'],
+                    (int)($r['balance'] ?? 0),
+                ]);
+            }
+            fclose($out);
+            exit;
+        }
+        if ($format === 'pdf') {
+            header('Content-Type: application/pdf');
+            header('Content-Disposition: attachment; filename="clients_' . date('Ymd_His') . '.pdf"');
+            // Minimal PDF via TCPDF si dispo, sinon fallback texte
+            try {
+                $pdf = new \TCPDF();
+                $pdf->SetCreator('Hill');
+                $pdf->SetAuthor('Hill');
+                $pdf->SetTitle('Clients');
+                $pdf->AddPage();
+                $html = '<h2>Liste des clients</h2><table border="1" cellpadding="4"><thead><tr><th>ID</th><th>Nom</th><th>Téléphone</th><th>Adresse</th><th>Dépôt</th><th>Solde</th></tr></thead><tbody>';
+                foreach ($rows as $r) {
+                    $html .= '<tr><td>' . (int)$r['id'] . '</td><td>' . htmlspecialchars($r['name'] ?? '') . '</td><td>' . htmlspecialchars($r['phone'] ?? '') . '</td><td>' . htmlspecialchars($r['address'] ?? '') . '</td><td>' . htmlspecialchars((string)($r['depot_id'] ?? '')) . '</td><td>' . (int)($r['balance'] ?? 0) . '</td></tr>';
+                }
+                $html .= '</tbody></table>';
+                $pdf->writeHTML($html);
+                $pdf->Output('clients.pdf', 'I');
+                exit;
+            } catch (\Throwable $e) {
+                // Fallback simple
+                echo "%PDF export unavailable: " . $e->getMessage();
+                exit;
+            }
+        }
+        // Default unknown format -> csv
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename="clients_' . date('Ymd_His') . '.csv"');
+        $out = fopen('php://output', 'w');
+        fputcsv($out, ['ID', 'Nom', 'Téléphone', 'Adresse', 'Depot', 'Solde']);
+        foreach ($rows as $r) {
+            fputcsv($out, [
+                $r['id'],
+                $r['name'],
+                $r['phone'],
+                $r['address'],
+                $r['depot_id'],
+                (int)($r['balance'] ?? 0),
+            ]);
+        }
+        fclose($out);
+        exit;
+    }
     // Create client (supports JSON and multipart) - auto-assign depot for non-admin
     if ($path === '/api/v1/clients' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $auth = requireAuth();

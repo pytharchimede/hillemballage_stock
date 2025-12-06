@@ -43,9 +43,12 @@
   async function load() {
     const grid = document.getElementById("clients-grid");
     const empty = document.getElementById("clients-empty");
+    const qInput = document.getElementById("clients-search-q");
+    const q = qInput ? qInput.value.trim() : "";
     let token = localStorage.getItem("api_token") || readCookieToken() || "";
     let url = apiUrl("/api/v1/clients");
     if (token) url += "?api_token=" + encodeURIComponent(token);
+    if (q) url += (token ? "&" : "?") + "q=" + encodeURIComponent(q);
     let r = await fetch(url, {
       headers: token ? { Authorization: "Bearer " + token } : {},
     });
@@ -61,7 +64,8 @@
             url =
               apiUrl("/api/v1/clients") +
               "?api_token=" +
-              encodeURIComponent(token);
+              encodeURIComponent(token) +
+              (q ? "&q=" + encodeURIComponent(q) : "");
             r = await fetch(url, {
               headers: { Authorization: "Bearer " + token },
             });
@@ -156,6 +160,46 @@
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
   }
+
+  // Hook search form
+  const form = document.getElementById("clients-search-form");
+  if (form) {
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      load();
+    });
+  }
+
+  // Export buttons
+  const expCsv = document.getElementById("clients-export-csv");
+  const expXls = document.getElementById("clients-export-xls");
+  const expPdf = document.getElementById("clients-export-pdf");
+  async function doExport(fmt) {
+    const qInput = document.getElementById("clients-search-q");
+    const q = qInput ? qInput.value.trim() : "";
+    const token = await ensureAuth();
+    let url = apiUrl(
+      "/api/v1/clients/export?format=" + encodeURIComponent(fmt)
+    );
+    if (q) url += "&q=" + encodeURIComponent(q);
+    if (token) url += "&api_token=" + encodeURIComponent(token);
+    window.location.href = url;
+  }
+  if (expCsv)
+    expCsv.addEventListener("click", function (e) {
+      e.preventDefault();
+      doExport("csv");
+    });
+  if (expXls)
+    expXls.addEventListener("click", function (e) {
+      e.preventDefault();
+      doExport("xlsx");
+    });
+  if (expPdf)
+    expPdf.addEventListener("click", function (e) {
+      e.preventDefault();
+      doExport("pdf");
+    });
 
   load();
 })();
