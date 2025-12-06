@@ -746,6 +746,63 @@
   renderCart();
   renderSelectedClient();
   updateHint(0);
+  // Exports de tournée pour livreur
+  const elExportRoundPdf = document.getElementById("sq-export-round-pdf");
+  const elExportRoundCsv = document.getElementById("sq-export-round-csv");
+  const elExportMyRoundsCsv = document.getElementById(
+    "sq-export-my-rounds-csv"
+  );
+  if (elExportRoundPdf) {
+    elExportRoundPdf.addEventListener("click", () => {
+      if (!currentRound || !currentRound.id) {
+        alert("Aucune tournée ouverte trouvée.");
+        return;
+      }
+      const url =
+        BASE +
+        "/api/v1/seller-rounds/" +
+        currentRound.id +
+        "/export?format=pdf";
+      window.open(url, "_blank");
+    });
+  }
+  if (elExportRoundCsv) {
+    elExportRoundCsv.addEventListener("click", () => {
+      if (!currentRound || !currentRound.id) {
+        alert("Aucune tournée ouverte trouvée.");
+        return;
+      }
+      const url =
+        BASE +
+        "/api/v1/seller-rounds/" +
+        currentRound.id +
+        "/export?format=csv";
+      window.open(url, "_blank");
+    });
+  }
+  if (elExportMyRoundsCsv) {
+    elExportMyRoundsCsv.addEventListener("click", async () => {
+      try {
+        const meResp = await fetch(BASE + "/api/v1/auth/me", {
+          headers: authHeaders(),
+        });
+        const me = meResp.ok ? await meResp.json() : null;
+        const uid = me?.id;
+        if (!uid) {
+          alert("Utilisateur non authentifié");
+          return;
+        }
+        const url =
+          BASE +
+          "/api/v1/seller-rounds/export?status=closed&user_id=" +
+          encodeURIComponent(String(uid)) +
+          "&format=csv";
+        window.open(url, "_blank");
+      } catch (_) {
+        alert("Export indisponible");
+      }
+    });
+  }
   async function loadRoundStats() {
     if (!currentRound || !currentRound.id) return;
     try {

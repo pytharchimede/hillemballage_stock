@@ -35,6 +35,7 @@
             </div>
         </div>
         <button id="sq-submit" class="btn">Valider la vente</button>
+
     </div>
     <div class="muted" style="margin-top:6px">Sélectionnez les produits ci-dessous, ajustez les quantités et validez.</div>
     <div id="sq-round-info" class="muted" style="margin-top:8px;font-size:12px"></div>

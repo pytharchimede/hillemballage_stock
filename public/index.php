@@ -931,7 +931,17 @@ if (str_starts_with($path, '/api/v1')) {
     // Seller rounds export (csv|pdf) with filters
     if ($path === '/api/v1/seller-rounds/export' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $u = requireAuth();
-        requirePermission($u, 'seller_rounds', 'view');
+        // Assouplir: les livreurs peuvent exporter la liste de leurs propres tournées
+        $canView = userCan($u, 'seller_rounds', 'view');
+        $isLivreur = (($u['role'] ?? '') === 'livreur');
+        if (!$canView && $isLivreur) {
+            // Forcer user_id sur l'utilisateur courant si non fourni
+            if (empty($_GET['user_id'])) {
+                $_GET['user_id'] = (string)((int)($u['id'] ?? 0));
+            }
+        } else if (!$canView) {
+            requirePermission($u, 'seller_rounds', 'view');
+        }
         $status = strtolower(trim($_GET['status'] ?? ''));
         $depotId = isset($_GET['depot_id']) && $_GET['depot_id'] !== '' ? (int)$_GET['depot_id'] : null;
         $userId = isset($_GET['user_id']) && $_GET['user_id'] !== '' ? (int)$_GET['user_id'] : null;
@@ -1040,7 +1050,6 @@ if (str_starts_with($path, '/api/v1')) {
     // Single seller round export (csv|pdf)
     if (preg_match('#^/api/v1/seller-rounds/(\d+)/export$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $u = requireAuth();
-        requirePermission($u, 'seller_rounds', 'view');
         $roundId = (int)$m[1];
         $format = strtolower(trim($_GET['format'] ?? 'pdf'));
         // Load round header
@@ -1049,6 +1058,14 @@ if (str_starts_with($path, '/api/v1')) {
             http_response_code(404);
             echo json_encode(['error' => 'Not found']);
             exit;
+        }
+        // Assouplir: permettre au livreur d'exporter sa propre tournée même sans droit global
+        $canView = userCan($u, 'seller_rounds', 'view');
+        $isLivreur = (($u['role'] ?? '') === 'livreur');
+        if (!$canView) {
+            if (!($isLivreur && (int)($u['id'] ?? 0) === (int)$round['user_id'])) {
+                requirePermission($u, 'seller_rounds', 'view');
+            }
         }
         // Load items with product names
         $items = DB::query('SELECT si.product_id, p.name AS name, si.qty_assigned, si.qty_returned FROM seller_round_items si LEFT JOIN products p ON p.id = si.product_id WHERE si.round_id = :r', [':r' => $roundId]);
@@ -1670,7 +1687,15 @@ if (str_starts_with($path, '/api/v1')) {
     // Seller rounds export
     if ($path === '/api/v1/seller-rounds/export' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $u = requireAuth();
-        requirePermission($u, 'seller_rounds', 'view');
+        // Assouplir: les livreurs peuvent exporter la liste de leurs propres tournées
+        $canView = userCan($u, 'seller_rounds', 'view');
+        $isLivreur = (($u['role'] ?? '') === 'livreur');
+        if (!$canView && $isLivreur) {
+            // Forcer le filtre user_id sur l'utilisateur courant
+            $_GET['user_id'] = (string)((int)($u['id'] ?? 0));
+        } else if (!$canView) {
+            requirePermission($u, 'seller_rounds', 'view');
+        }
         ensure_seller_rounds_tables();
         $status = strtolower(trim($_GET['status'] ?? 'closed'));
         $format = strtolower(trim($_GET['format'] ?? 'csv'));
@@ -5460,6 +5485,29 @@ if ($path === '/seller-rounds') {
     exit;
 }
 
+// Mon activité (livreur)
+if ($path === '/mon-activite') {
+    if (empty($_SESSION['user_id'])) {
+        header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
+        exit;
+    }
+    $uid = (int)$_SESSION['user_id'];
+    $u = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+    // Accessible aux livreurs; les autres rôles peuvent aussi consulter leur activité si souhaité
+    if (!$u || !in_array(($u['role'] ?? ''), ['livreur', 'gerant', 'admin'], true)) {
+        http_response_code(403);
+        echo 'Accès refusé';
+        exit;
+    }
+    try {
+        audit_log((int)$_SESSION['user_id'], 'view', 'seller_rounds', null, $path, 'GET');
+    } catch (\Throwable $e) {
+    }
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/mon_activite.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
 // Collections page (Recouvrement)
 if ($path === '/collections') {
     if (empty($_SESSION['user_id'])) {
