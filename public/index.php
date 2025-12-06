@@ -1116,15 +1116,58 @@ if (str_starts_with($path, '/api/v1')) {
         header('Content-Type: application/pdf');
         header('Content-Disposition: attachment; filename="seller_round_' . (int)$roundId . '_' . date('Ymd_His') . '.pdf"');
         try {
-            $pdf = new \TCPDF();
+            // Classe personnalisée pour Header/Footers
+            if (!class_exists('HILLPDF')) {
+                class HILLPDF extends \TCPDF
+                {
+                    public function Header()
+                    {
+                        // Fond du header d'abord pour ne pas recouvrir le logo
+                        $this->SetFillColor(245, 245, 245);
+                        $this->Rect(0, 0, 210, 40, 'F');
+                        // Utiliser le logo du projet: /assets/images/logos_complet_single.png
+                        $logo = __DIR__ . '/../assets/images/logos_complet_single.png';
+                        if (@file_exists($logo)) {
+                            $this->Image($logo, 12, 10, 30, '', '', '', 'T', false, 300);
+                        }
+                        $this->SetY(8);
+                        $this->SetX(50);
+                        $this->SetFont('helvetica', '', 9);
+                        $this->SetTextColor(38, 50, 56);
+                        $txt = "PAPETERIE HILL\nN°CC : 25 00 790 P\nRCCM N° : CI ABJ-03-3035-A10-C0717\nSiège : Abidjan Yopougon Port Bouet 2 – Carrefour Niangon\nEmail : hillemballage@gmail.com\nActivité : Vente d'articles, emballages & divers";
+                        $this->MultiCell(0, 5, $txt, 0, 'L', 0, 1, 50, 8, true);
+                        $this->SetDrawColor(255, 167, 38);
+                        $this->SetLineWidth(1.2);
+                        $this->Line(10, 41, 200, 41);
+                    }
+                    public function Footer()
+                    {
+                        $this->SetY(-20);
+                        $this->SetDrawColor(204, 204, 204);
+                        $this->SetLineWidth(0.2);
+                        $this->Line(10, $this->GetY(), 200, $this->GetY());
+                        $this->SetY(-17);
+                        $this->SetFont('helvetica', '', 9);
+                        $this->SetTextColor(60, 60, 60);
+                        $this->Cell(0, 5, "PAPETERIE HILL – Solutions d’emballage & logistique", 0, 1, 'C');
+                        $this->SetY(-12);
+                        $this->Cell(0, 5, 'Page ' . $this->getAliasNumPage() . ' / ' . $this->getAliasNbPages(), 0, 0, 'C');
+                    }
+                }
+            }
+            $pdf = new HILLPDF('P', 'mm', 'A4', true, 'UTF-8', false);
             $pdf->SetCreator('Hill');
             $pdf->SetAuthor('Hill');
             $pdf->SetTitle('Tournée #' . (int)$roundId);
+            $pdf->SetMargins(15, 48, 15);
+            $pdf->SetHeaderMargin(10);
+            $pdf->SetFooterMargin(15);
+            $pdf->SetAutoPageBreak(true, 25);
             $pdf->AddPage();
             $title = 'Tournée #' . (int)$roundId . ' — ' . htmlspecialchars($round['user_name'] ?? ('#' . $round['user_id'])) . ' / ' . htmlspecialchars($round['depot_name'] ?? (string)$round['depot_id']);
-            $html = '<h2>' . $title . '</h2>';
+            $html = '<h2 style="color:#263238">' . $title . '</h2>';
             $html .= '<div>Statut: ' . htmlspecialchars((string)$round['status']) . ' • Ouverture: ' . htmlspecialchars((string)$round['assigned_at']) . ' • Clôture: ' . htmlspecialchars((string)($round['closed_at'] ?? '')) . '</div>';
-            $html .= '<h3>Articles</h3><table border="1" cellpadding="4"><thead><tr><th>Produit</th><th>Attribué</th><th>Vendu</th><th>Retourné</th><th>Reste</th></tr></thead><tbody>';
+            $html .= '<h3 style="margin-top:10px;color:#263238">Articles</h3><table border="1" cellpadding="4"><thead><tr><th>Produit</th><th>Attribué</th><th>Vendu</th><th>Retourné</th><th>Reste</th></tr></thead><tbody>';
             foreach ($items as $it) {
                 $assigned = (int)$it['qty_assigned'];
                 $sold = (int)($soldMap[(int)$it['product_id']] ?? 0);
@@ -1133,7 +1176,7 @@ if (str_starts_with($path, '/api/v1')) {
                 $html .= '<tr><td>' . htmlspecialchars($it['name'] ?? ('#' . $it['product_id'])) . '</td><td>' . $assigned . '</td><td>' . $sold . '</td><td>' . $returned . '</td><td>' . $remaining . '</td></tr>';
             }
             $html .= '</tbody></table>';
-            $html .= '<h3>Totaux</h3><div>Paiements: ' . (int)$paymentsAmt . ' FCFA • Cash remis: ' . (int)($round['cash_turned_in'] ?? 0) . ' FCFA</div>';
+            $html .= '<h3 style="margin-top:10px;color:#263238">Totaux</h3><div>Paiements: ' . (int)$paymentsAmt . ' FCFA • Cash remis: ' . (int)($round['cash_turned_in'] ?? 0) . ' FCFA</div>';
             $pdf->writeHTML($html);
             $pdf->Output('seller_round_' . (int)$roundId . '.pdf', 'I');
             exit;
