@@ -564,6 +564,78 @@ function ensure_sale_payments_table(): void
     }
 }
 
+$function_exists_suppliers = function_exists('ensure_suppliers_table');
+if (!$function_exists_suppliers) {
+    // Création robuste de la table fournisseurs si absente
+    function ensure_suppliers_table(): void
+    {
+        try {
+            DB::execute('CREATE TABLE IF NOT EXISTS suppliers (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                legal_name VARCHAR(255) NULL,
+                legal_form VARCHAR(100) NULL,
+                registration_number VARCHAR(100) NULL,
+                tax_id VARCHAR(100) NULL,
+                email VARCHAR(255) NULL,
+                phone VARCHAR(100) NULL,
+                website VARCHAR(255) NULL,
+                address VARCHAR(255) NULL,
+                city VARCHAR(120) NULL,
+                region VARCHAR(120) NULL,
+                country VARCHAR(120) NULL,
+                postal_code VARCHAR(20) NULL,
+                latitude DECIMAL(10,6) NULL,
+                longitude DECIMAL(10,6) NULL,
+                contact_person VARCHAR(255) NULL,
+                payment_terms VARCHAR(255) NULL,
+                delivery_time VARCHAR(100) NULL,
+                bank_name VARCHAR(255) NULL,
+                iban VARCHAR(64) NULL,
+                bic_swift VARCHAR(64) NULL,
+                categories TEXT NULL,
+                active TINYINT(1) NOT NULL DEFAULT 1,
+                notes TEXT NULL,
+                created_at DATETIME NULL,
+                updated_at DATETIME NULL
+            ) ENGINE=InnoDB');
+        } catch (\Throwable $e) { /* ignore */
+        }
+    }
+}
+
+// Catégories: création auto + seed minimal
+if (!function_exists('ensure_categories_table')) {
+    function ensure_categories_table(): void
+    {
+        try {
+            DB::execute('CREATE TABLE IF NOT EXISTS categories (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(120) NOT NULL,
+                slug VARCHAR(120) NOT NULL UNIQUE,
+                active TINYINT(1) NOT NULL DEFAULT 1,
+                created_at DATETIME NULL,
+                updated_at DATETIME NULL
+            ) ENGINE=InnoDB');
+            // Seed de base si vide
+            $count = DB::query('SELECT COUNT(*) AS c FROM categories')[0]['c'] ?? 0;
+            if ((int)$count === 0) {
+                $seed = [
+                    ['name' => 'Cartons', 'slug' => 'cartons'],
+                    ['name' => 'Sachets', 'slug' => 'sachets'],
+                    ['name' => 'Films', 'slug' => 'films'],
+                    ['name' => 'Palettes', 'slug' => 'palettes'],
+                    ['name' => 'Accessoires', 'slug' => 'accessoires'],
+                ];
+                foreach ($seed as $s) {
+                    DB::execute('INSERT IGNORE INTO categories (name, slug, active, created_at) VALUES (:name, :slug, 1, NOW())', [':name' => $s['name'], ':slug' => $s['slug']]);
+                }
+            }
+        } catch (\Throwable $e) { /* ignore */
+        }
+    }
+}
+
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 // Normaliser le chemin quand l'appli est servie dans un sous-dossier (/hill_new/public/)
 $base = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/'); // ex: /hill_new/public
@@ -584,6 +656,182 @@ if (!str_starts_with($path, '/api/') && $path !== '/login') {
 
 // Simple router (web + api v1)
 if (str_starts_with($path, '/api/v1')) {
+    // Categories listing
+    if ($path === '/api/v1/categories' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        ensure_categories_table();
+        $auth = requireAuth();
+        // Accessible aux rôles connectés; filtrage si besoin plus tard
+        $rows = DB::query('SELECT id,name,slug,active FROM categories WHERE active=1 ORDER BY name ASC');
+        echo json_encode($rows);
+        exit;
+    }
+
+    // Suppliers listing (admin) with search
+    if ($path === '/api/v1/suppliers' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        ensure_suppliers_table();
+        $auth = requireAuth();
+        if (($auth['role'] ?? '') !== 'admin') {
+            http_response_code(403);
+            echo json_encode(['error' => 'Accès refusé']);
+            exit;
+        }
+        $q = trim((string)($_GET['q'] ?? ''));
+        $limit = (int)($_GET['limit'] ?? 200);
+        if ($limit < 1 || $limit > 1000) $limit = 200;
+        $where = [];
+        $params = [];
+        if ($q !== '') {
+            $where[] = '(name LIKE :q OR email LIKE :q OR phone LIKE :q OR city LIKE :q OR country LIKE :q)';
+            $params[':q'] = '%' . $q . '%';
+        }
+        $sql = 'SELECT id,name,email,phone,city,country,active FROM suppliers' . ($where ? (' WHERE ' . implode(' AND ', $where)) : '') . ' ORDER BY name ASC LIMIT ' . $limit;
+        $rows = DB::query($sql, $params);
+        echo json_encode(['suppliers' => $rows]);
+        exit;
+    }
+
+    // Create supplier (admin)
+    if ($path === '/api/v1/suppliers' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        header('Content-Type: application/json');
+        ensure_suppliers_table();
+        $auth = requireAuth();
+        if (($auth['role'] ?? '') !== 'admin') {
+            http_response_code(403);
+            echo json_encode(['error' => 'Accès refusé']);
+            exit;
+        }
+        $raw = file_get_contents('php://input');
+        $p = json_decode($raw, true) ?: [];
+        $name = trim((string)($p['name'] ?? ''));
+        if ($name === '') {
+            http_response_code(422);
+            echo json_encode(['error' => 'Nom requis']);
+            exit;
+        }
+        // Compat: si un champ "location" est fourni, l'utiliser comme adresse
+        if (!empty($p['location']) && empty($p['address'])) {
+            $p['address'] = $p['location'];
+        }
+        // Encoder les catégories si un tableau est reçu
+        $categoriesVal = $p['categories'] ?? null;
+        if (is_array($categoriesVal)) {
+            $categoriesVal = json_encode($categoriesVal, JSON_UNESCAPED_UNICODE);
+        }
+        $fields = [
+            ':name' => $name,
+            ':legal_name' => ($p['legal_name'] ?? null),
+            ':legal_form' => ($p['legal_form'] ?? null),
+            ':registration_number' => ($p['registration_number'] ?? null),
+            ':tax_id' => ($p['tax_id'] ?? null),
+            ':email' => ($p['email'] ?? null),
+            ':phone' => ($p['phone'] ?? null),
+            ':website' => ($p['website'] ?? null),
+            ':address' => ($p['address'] ?? null),
+            ':city' => ($p['city'] ?? null),
+            ':region' => ($p['region'] ?? null),
+            ':country' => ($p['country'] ?? null),
+            ':postal_code' => ($p['postal_code'] ?? null),
+            ':latitude' => ($p['latitude'] ?? ($p['lat'] ?? null)),
+            ':longitude' => ($p['longitude'] ?? ($p['lon'] ?? null)),
+            ':contact_person' => ($p['contact_person'] ?? null),
+            ':payment_terms' => ($p['payment_terms'] ?? null),
+            ':delivery_time' => ($p['delivery_time'] ?? null),
+            ':bank_name' => ($p['bank_name'] ?? null),
+            ':iban' => ($p['iban'] ?? null),
+            ':bic_swift' => ($p['bic_swift'] ?? null),
+            ':categories' => $categoriesVal,
+            ':active' => (isset($p['active']) ? (int)(!!$p['active']) : 1),
+        ];
+        DB::execute('INSERT INTO suppliers (name,legal_name,legal_form,registration_number,tax_id,email,phone,website,address,city,region,country,postal_code,latitude,longitude,contact_person,payment_terms,delivery_time,bank_name,iban,bic_swift,categories,active,created_at) VALUES (:name,:legal_name,:legal_form,:registration_number,:tax_id,:email,:phone,:website,:address,:city,:region,:country,:postal_code,:latitude,:longitude,:contact_person,:payment_terms,:delivery_time,:bank_name,:iban,:bic_swift,:categories,:active,NOW())', $fields);
+        $rowId = DB::query('SELECT LAST_INSERT_ID() AS li')[0] ?? null;
+        $id = (int)($rowId['li'] ?? 0);
+        echo json_encode(['ok' => true, 'id' => (int)$id]);
+        exit;
+    }
+
+    // Update supplier (admin)
+    if (preg_match('#^/api/v1/suppliers/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
+        ensure_suppliers_table();
+        $auth = requireAuth();
+        if (($auth['role'] ?? '') !== 'admin') {
+            http_response_code(403);
+            echo json_encode(['error' => 'Accès refusé']);
+            exit;
+        }
+        $sid = (int)$m[1];
+        $raw = file_get_contents('php://input');
+        $p = json_decode($raw, true) ?: [];
+        $allowed = ['name', 'legal_name', 'legal_form', 'registration_number', 'tax_id', 'email', 'phone', 'website', 'address', 'city', 'region', 'country', 'postal_code', 'latitude', 'longitude', 'contact_person', 'payment_terms', 'delivery_time', 'bank_name', 'iban', 'bic_swift', 'categories', 'active'];
+        $sets = [];
+        $params = [':id' => $sid];
+        foreach ($allowed as $k) {
+            if (array_key_exists($k, $p)) {
+                $sets[] = "$k = :$k";
+                $params[":$k"] = $p[$k];
+            }
+        }
+        if (!$sets) {
+            echo json_encode(['ok' => true]);
+            exit;
+        }
+        DB::execute('UPDATE suppliers SET ' . implode(',', $sets) . ', updated_at=NOW() WHERE id=:id', $params);
+        echo json_encode(['ok' => true]);
+        exit;
+    }
+
+    // Suppliers export CSV/PDF
+    if ($path === '/api/v1/suppliers/export' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        ensure_suppliers_table();
+        $auth = requireAuth();
+        if (($auth['role'] ?? '') !== 'admin') {
+            http_response_code(403);
+            echo json_encode(['error' => 'Accès refusé']);
+            exit;
+        }
+        $fmt = strtolower((string)($_GET['format'] ?? 'csv'));
+        $q = trim((string)($_GET['q'] ?? ''));
+        $where = [];
+        $params = [];
+        if ($q !== '') {
+            $where[] = '(name LIKE :q OR email LIKE :q OR phone LIKE :q OR city LIKE :q OR country LIKE :q)';
+            $params[':q'] = '%' . $q . '%';
+        }
+        $rows = DB::query('SELECT * FROM suppliers' . ($where ? (' WHERE ' . implode(' AND ', $where)) : '') . ' ORDER BY name ASC', $params);
+        if ($fmt === 'pdf') {
+            if (!class_exists('TCPDF')) {
+                @include_once __DIR__ . '/../vendor/tecnickcom/tcpdf/tcpdf.php';
+            }
+            if (!class_exists('TCPDF')) {
+                http_response_code(500);
+                echo json_encode(['error' => 'TCPDF non installé']);
+                exit;
+            }
+            $pdf = function_exists('hill_pdf_create') ? hill_pdf_create('Fournisseurs') : new TCPDF('P', 'mm', 'A4');
+            if (!function_exists('hill_pdf_create')) {
+                $pdf->SetCreator('Hill Stock');
+                $pdf->SetAuthor('Hill Stock');
+                $pdf->SetTitle('Fournisseurs');
+                $pdf->AddPage();
+            }
+            $html = '<h2>Liste des fournisseurs</h2><table border="1" cellpadding="4"><thead><tr><th>Nom</th><th>Email</th><th>Téléphone</th><th>Ville</th><th>Pays</th></tr></thead><tbody>';
+            foreach ($rows as $r) {
+                $html .= '<tr><td>' . htmlspecialchars($r['name'] ?? '') . '</td><td>' . htmlspecialchars($r['email'] ?? '') . '</td><td>' . htmlspecialchars($r['phone'] ?? '') . '</td><td>' . htmlspecialchars($r['city'] ?? '') . '</td><td>' . htmlspecialchars($r['country'] ?? '') . '</td></tr>';
+            }
+            $html .= '</tbody></table>';
+            $pdf->writeHTML($html);
+            $pdf->Output('fournisseurs.pdf', 'I');
+        } else {
+            header('Content-Type: text/csv');
+            header('Content-Disposition: attachment; filename="fournisseurs.csv"');
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['Nom', 'Email', 'Téléphone', 'Ville', 'Pays']);
+            foreach ($rows as $r) {
+                fputcsv($out, [$r['name'] ?? '', $r['email'] ?? '', $r['phone'] ?? '', $r['city'] ?? '', $r['country'] ?? '']);
+            }
+            fclose($out);
+        }
+        exit;
+    }
     header('Content-Type: application/json');
     // Audit: tracer toute requête API (si possible)
     try {
@@ -5027,6 +5275,43 @@ if (str_starts_with($path, '/api/v1')) {
 }
 
 // Web pages
+// Suppliers page (admin)
+if ($path === '/suppliers') {
+    if (empty($_SESSION['user_id'])) {
+        header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
+        exit;
+    }
+    $uid = (int)$_SESSION['user_id'];
+    $urow = DB::query('SELECT role FROM users WHERE id=:id', [':id' => $uid])[0] ?? null;
+    if (!$urow || ($urow['role'] ?? '') !== 'admin') {
+        http_response_code(403);
+        echo 'Accès refusé';
+        exit;
+    }
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/suppliers.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+
+// Suppliers new page (admin)
+if ($path === '/suppliers/new') {
+    if (empty($_SESSION['user_id'])) {
+        header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
+        exit;
+    }
+    $uid = (int)$_SESSION['user_id'];
+    $urow = DB::query('SELECT role FROM users WHERE id=:id', [':id' => $uid])[0] ?? null;
+    if (!$urow || ($urow['role'] ?? '') !== 'admin') {
+        http_response_code(403);
+        echo 'Accès refusé';
+        exit;
+    }
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/suppliers_form.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
 if ($path === '/' || $path === '/dashboard') {
     if (empty($_SESSION['user_id'])) {
         header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
@@ -5097,6 +5382,44 @@ if ($path === '/login') {
         exit;
     } else {
         include __DIR__ . '/../views/login.php';
+        exit;
+    }
+
+    // Upload documents for suppliers (drag-n-drop)
+    if ($path === '/api/v1/uploads/supplier-docs' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $auth = requireAuth();
+        if (($auth['role'] ?? '') !== 'admin') {
+            http_response_code(403);
+            echo json_encode(['error' => 'Accès refusé']);
+            exit;
+        }
+        // Préparer dossier
+        $uploadDir = __DIR__ . '/uploads/supplier-docs';
+        if (!is_dir($uploadDir)) {
+            @mkdir($uploadDir, 0777, true);
+        }
+        $resp = ['files' => []];
+        // Support files[]
+        if (!empty($_FILES['files'])) {
+            $files = $_FILES['files'];
+            $count = is_array($files['name']) ? count($files['name']) : 0;
+            for ($i = 0; $i < $count; $i++) {
+                $name = $files['name'][$i];
+                $tmp = $files['tmp_name'][$i];
+                $err = $files['error'][$i];
+                if ($err === UPLOAD_ERR_OK && is_uploaded_file($tmp)) {
+                    $safeName = preg_replace('/[^A-Za-z0-9_.-]+/', '_', $name);
+                    $unique = uniqid('doc_', true) . '_' . $safeName;
+                    $dest = $uploadDir . '/' . $unique;
+                    if (@move_uploaded_file($tmp, $dest)) {
+                        $url = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/uploads/supplier-docs/' . $unique;
+                        $resp['files'][] = ['filename' => $unique, 'url' => $url, 'name' => $name];
+                    }
+                }
+            }
+        }
+        header('Content-Type: application/json');
+        echo json_encode($resp);
         exit;
     }
 }
