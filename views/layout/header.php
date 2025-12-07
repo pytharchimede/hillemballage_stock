@@ -31,6 +31,13 @@
             <a data-entity="depots" data-action="view" href="<?= $routeBase ?>/depots/map">Carte dépôts</a>
             <a data-entity="products" data-action="view" href="<?= $routeBase ?>/products">Produits</a>
             <a data-entity="clients" data-action="view" href="<?= $routeBase ?>/clients">Clients</a>
+            <?php
+            // Lien Fournisseurs pour admin uniquement
+            $uid = (int)($_SESSION['user_id'] ?? 0);
+            $roleRow = $uid ? (\App\Support\DB::query('SELECT role FROM users WHERE id=:id', [':id' => $uid])[0] ?? null) : null;
+            if ($roleRow && ($roleRow['role'] ?? '') === 'admin'): ?>
+                <a href="<?= $routeBase ?>/suppliers">Fournisseurs</a>
+            <?php endif; ?>
             <a data-entity="orders" data-action="view" href="<?= $routeBase ?>/orders">Commandes</a>
             <a data-entity="transfers" data-action="view" href="<?= $routeBase ?>/transferts">Transferts</a>
             <a data-entity="sales" data-action="view" href="<?= $routeBase ?>/sales-quick">Vente rapide</a>
