@@ -399,6 +399,26 @@ function requireUserCan(array $u, string $entity, string $action): void
     }
 }
 
+// --- Audit (langage naturel) minimal wrapper ---
+if (!function_exists('audit_log_natural')) {
+    function audit_log_natural(string $message, ?string $action = null, array $context = []): void
+    {
+        try {
+            $actor = currentUserOrApi();
+            $actorId = $actor['id'] ?? null;
+            $route = $_SERVER['REQUEST_URI'] ?? '';
+            $method = $_SERVER['REQUEST_METHOD'] ?? '';
+            // stocker le message dans meta pour lecture aisée
+            $meta = array_merge($context, ['message' => $message]);
+            // utiliser l'audit existant s'il est présent
+            if (function_exists('audit_log')) {
+                audit_log($actorId, $action ?: 'message', 'natural', null, $route, $method, $meta);
+            }
+        } catch (\Throwable $e) { /* ne pas bloquer */
+        }
+    }
+}
+
 function save_upload(string $field, string $subdir = 'uploads'): ?string
 {
     if (empty($_FILES[$field]) || ($_FILES[$field]['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
@@ -943,8 +963,8 @@ if (str_starts_with($path, '/api/v1')) {
             exit;
         }
         $token = $uModel->createToken((int)$user['id']);
-        // Audit: connexion
-        audit_log((int)$user['id'], 'login', 'auth', (int)$user['id'], $path, 'POST', ['email' => $email]);
+        // Audit: connexion (langage naturel)
+        audit_log_natural(sprintf('Connexion de %s', (string)($user['name'] ?? $email)), 'login', ['email' => $email, 'user_id' => (int)$user['id']]);
         echo json_encode(['token' => $token, 'user' => ['id' => $user['id'], 'name' => $user['name'], 'role' => $user['role']]]);
         exit;
     }
@@ -954,6 +974,7 @@ if (str_starts_with($path, '/api/v1')) {
         $role = (string)($auth['role'] ?? '');
         $userDepotId = (int)($auth['depot_id'] ?? 0);
         $q = trim($_GET['q'] ?? '');
+        audit_log_natural('Consultation de la liste des dépôts', 'consultation', ['q' => $q]);
         if ($role === 'admin') {
             if ($q !== '') {
                 $like = '%' . $q . '%';
@@ -976,6 +997,7 @@ if (str_starts_with($path, '/api/v1')) {
     if (preg_match('#^/api/v1/depots/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $auth = requireAuth();
         $id = (int)$m[1];
+        audit_log_natural(sprintf('Consultation du dépôt #%d', $id), 'consultation', ['depot_id' => $id]);
         $role = (string)($auth['role'] ?? '');
         $userDepotId = (int)($auth['depot_id'] ?? 0);
         if ($role !== 'admin' && $id !== $userDepotId) {
@@ -1144,6 +1166,19 @@ if (str_starts_with($path, '/api/v1')) {
         if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
         $sql .= ' ORDER BY c.id DESC';
         $rows = DB::query($sql, $params);
+        // Audit: consultation liste clients
+        try {
+            $scope = ($role === 'admin')
+                ? ($depId !== null ? sprintf('dépôt #%d', (int)$depId) : 'tous dépôts')
+                : sprintf('dépôt #%d', (int)$userDepotId);
+            $qInfo = $q !== '' ? sprintf(" avec recherche '%s'", $q) : '';
+            audit_log_natural(
+                sprintf('Consultation de la liste des clients (%s%s)', $scope, $qInfo),
+                'clients_consultation',
+                ['depot_id' => $depId ?? $userDepotId, 'q' => $q]
+            );
+        } catch (\Throwable $e) { /* ignore */
+        }
         echo json_encode($rows);
         exit;
     }
@@ -1536,6 +1571,15 @@ if (str_starts_with($path, '/api/v1')) {
             'photo_path' => $photo,
             'created_at' => date('Y-m-d H:i:s')
         ]);
+        // Audit: création client
+        try {
+            audit_log_natural(
+                sprintf("Création du client '%s' (téléphone %s)", (string)($data['name'] ?? 'Client'), (string)($data['phone'] ?? '')),
+                'client_creation',
+                ['client_id' => (int)$id, 'depot_id' => (int)$targetDepotId]
+            );
+        } catch (\Throwable $e) { /* ignore */
+        }
         echo json_encode(['id' => $id, 'photo_path' => $photo]);
         exit;
     }
@@ -1568,6 +1612,15 @@ if (str_starts_with($path, '/api/v1')) {
                 $params[':cl'] = (int)$data['credit_limit'];
             }
             DB::execute('UPDATE clients SET ' . $fields . ', updated_at=NOW() WHERE id=:id', $params);
+            // Audit: mise à jour client (JSON)
+            try {
+                audit_log_natural(
+                    sprintf("Mise à jour du client #%d: nom='%s', téléphone='%s'", $id, (string)($data['name'] ?? 'Client'), (string)($data['phone'] ?? '')),
+                    'client_mise_a_jour',
+                    ['client_id' => $id]
+                );
+            } catch (\Throwable $e) { /* ignore */
+            }
             echo json_encode(['updated' => true]);
         } else {
             $data = $_POST;
@@ -1584,6 +1637,15 @@ if (str_starts_with($path, '/api/v1')) {
             }
             $sql .= ', updated_at=NOW() WHERE id=:id';
             DB::execute($sql, $params);
+            // Audit: mise à jour client (multipart)
+            try {
+                audit_log_natural(
+                    sprintf("Mise à jour du client #%d (multipart): nom='%s', téléphone='%s'", $id, (string)($data['name'] ?? 'Client'), (string)($data['phone'] ?? '')),
+                    'client_mise_a_jour',
+                    ['client_id' => $id]
+                );
+            } catch (\Throwable $e) { /* ignore */
+            }
             echo json_encode(['updated' => true, 'photo_path' => $photo]);
         }
         exit;
@@ -1611,6 +1673,15 @@ if (str_starts_with($path, '/api/v1')) {
                 echo json_encode(['error' => 'Forbidden']);
                 exit;
             }
+        }
+        // Audit: consultation fiche client
+        try {
+            audit_log_natural(
+                sprintf("Consultation du client #%d (%s)", (int)$row['id'], (string)$row['name']),
+                'client_consultation',
+                ['client_id' => (int)$row['id']]
+            );
+        } catch (\Throwable $e) { /* ignore */
         }
         echo json_encode($row);
         exit;
@@ -1652,8 +1723,12 @@ if (str_starts_with($path, '/api/v1')) {
         DB::execute('UPDATE clients SET balance_cached = COALESCE((SELECT SUM(s.total_amount) - SUM(s.amount_paid) FROM sales s WHERE s.client_id = :c),0) WHERE id = :c', [':c' => $clientId]);
         $balRow = DB::query('SELECT balance_cached AS b FROM clients WHERE id=:c', [':c' => $clientId])[0] ?? ['b' => 0];
         try {
-            audit_log((int)$auth['id'], 'modify', 'clients', $clientId, $path, 'POST', ['applied' => $appliedTotal]);
-        } catch (\Throwable $e) {
+            audit_log_natural(
+                sprintf('Encaissement client #%d: %s, méthode %s', $clientId, format_fcfa((int)$appliedTotal), $method),
+                'client_encaissement',
+                ['client_id' => $clientId, 'applied' => (int)$appliedTotal, 'unallocated' => (int)$remaining]
+            );
+        } catch (\Throwable $e) { /* ignore */
         }
         echo json_encode(['collected' => $appliedTotal, 'unallocated' => $remaining, 'allocations' => $allocations, 'balance' => (int)$balRow['b']]);
         exit;
@@ -1733,6 +1808,21 @@ if (str_starts_with($path, '/api/v1')) {
         $sm = new StockMovement();
         $sm->move((int)$data['depot_id'], (int)$data['product_id'], $data['type'], (int)$data['quantity']);
         selfAdjustStock((int)$data['depot_id'], (int)$data['product_id'], $data['type'], (int)$data['quantity']);
+        // Audit: mouvement de stock (langage naturel)
+        try {
+            $pRow = DB::query('SELECT name FROM products WHERE id=:id', [':id' => (int)$data['product_id']])[0] ?? null;
+            $pName = (string)($pRow['name'] ?? ('produit#' . (int)$data['product_id']));
+            $type = (string)$data['type'];
+            $qty = (int)$data['quantity'];
+            $depot = (int)$data['depot_id'];
+            $direction = $type === 'in' ? 'entrée' : ($type === 'out' ? 'sortie' : $type);
+            audit_log_natural(
+                sprintf("Mouvement de stock: %s de %d unités pour %s au dépôt #%d", $direction, $qty, $pName, $depot),
+                'stock_movement',
+                ['depot_id' => $depot, 'product_id' => (int)$data['product_id'], 'type' => $type, 'quantity' => $qty]
+            );
+        } catch (\Throwable $e) { /* ignore */
+        }
         echo json_encode(['ok' => true]);
         exit;
     }
@@ -1891,6 +1981,19 @@ if (str_starts_with($path, '/api/v1')) {
         }
         if (($data['payment_amount'] ?? 0) > 0) {
             $saleModel->addPayment($saleId, (int)$data['payment_amount']);
+            // Audit: encaissement (langage naturel)
+            $montant = (int)$data['payment_amount'];
+            $clientName = '';
+            try {
+                $cRow = DB::query('SELECT name FROM clients WHERE id=:id', [':id' => (int)$data['client_id']])[0] ?? null;
+                $clientName = (string)($cRow['name'] ?? 'client#' . (int)$data['client_id']);
+            } catch (\Throwable $e) { /* ignore */
+            }
+            audit_log_natural(
+                sprintf("Encaissement d'un montant de %s auprès du client %s pour paiement", format_fcfa($montant), $clientName),
+                'encaissement',
+                ['sale_id' => $saleId, 'client_id' => (int)$data['client_id'], 'amount' => $montant]
+            );
         }
         // Mettre à jour le statut payé/dû selon les montants
         $sale = $saleModel->find($saleId);
@@ -1916,6 +2019,18 @@ if (str_starts_with($path, '/api/v1')) {
         DB::execute('UPDATE users SET seller_balance = COALESCE(seller_balance,0) + :delta WHERE id = :uid', [':delta' => $netDue, ':uid' => (int)$auth['id']]);
 
         $sale = $saleModel->find($saleId);
+        // Audit: vente (langage naturel)
+        try {
+            $clientName = '';
+            $cRow2 = DB::query('SELECT name FROM clients WHERE id=:id', [':id' => (int)$data['client_id']])[0] ?? null;
+            $clientName = (string)($cRow2['name'] ?? 'client#' . (int)$data['client_id']);
+            audit_log_natural(
+                sprintf("Vente d'un montant de %s au client %s", format_fcfa($total), $clientName),
+                'vente',
+                ['sale_id' => $saleId, 'client_id' => (int)$data['client_id'], 'total' => (int)$total]
+            );
+        } catch (\Throwable $e) { /* ignore */
+        }
         echo json_encode(['sale' => $sale]);
         exit;
     }
@@ -1926,6 +2041,14 @@ if (str_starts_with($path, '/api/v1')) {
         // Assouplir: les livreurs peuvent voir leurs propres tournées même si seller_rounds.view est désactivé
         $canView = userCan($u, 'seller_rounds', 'view');
         $isLivreur = (($u['role'] ?? '') === 'livreur');
+        // Audit: consultation liste tournées
+        try {
+            $status = strtolower(trim($_GET['status'] ?? 'open'));
+            $depotId = isset($_GET['depot_id']) ? (int)$_GET['depot_id'] : null;
+            $userIdReq = isset($_GET['user_id']) ? (int)$_GET['user_id'] : null;
+            audit_log_natural('Consultation de la liste des tournées', 'consultation', ['status' => $status, 'depot_id' => $depotId, 'user_id' => $userIdReq]);
+        } catch (\Throwable $e) { /* ignore */
+        }
         $requestedUserId = isset($_GET['user_id']) ? (int)$_GET['user_id'] : null;
         if (!$canView && $isLivreur) {
             // Autoriser si la requête cible son propre user_id, sinon le forcer
@@ -1997,6 +2120,11 @@ if (str_starts_with($path, '/api/v1')) {
         $u = requireAuth();
         ensure_seller_rounds_tables();
         $rid = (int)$m[1];
+        // Audit: consultation stats tournée
+        try {
+            audit_log_natural(sprintf('Consultation des statistiques de la tournée #%d', $rid), 'consultation', ['round_id' => $rid]);
+        } catch (\Throwable $e) { /* ignore */
+        }
         $round = DB::query('SELECT * FROM seller_rounds WHERE id=:id', [':id' => $rid])[0] ?? null;
         if (!$round) {
             http_response_code(404);
@@ -2254,6 +2382,14 @@ if (str_starts_with($path, '/api/v1')) {
         $role = (string)($auth['role'] ?? '');
         $uid = (int)($auth['id'] ?? 0);
         $userDepotId = (int)($auth['depot_id'] ?? 0);
+        // Audit: consultation liste ventes
+        try {
+            $q = trim($_GET['q'] ?? '');
+            $from = $_GET['from'] ?? null;
+            $to = $_GET['to'] ?? null;
+            audit_log_natural('Consultation de la liste des ventes', 'consultation', ['q' => $q, 'from' => $from, 'to' => $to]);
+        } catch (\Throwable $e) { /* ignore */
+        }
         $w = [];
         $p = [];
         if (!empty($_GET['client_id'])) {
@@ -2309,6 +2445,14 @@ if (str_starts_with($path, '/api/v1')) {
         $role = (string)($auth['role'] ?? '');
         $uid = (int)($auth['id'] ?? 0);
         $userDepotId = (int)($auth['depot_id'] ?? 0);
+        // Audit: consultation liste créances
+        try {
+            $from = $_GET['from'] ?? null;
+            $to = $_GET['to'] ?? null;
+            $clientId = isset($_GET['client_id']) ? (int)$_GET['client_id'] : null;
+            audit_log_natural('Consultation des créances clients', 'consultation', ['client_id' => $clientId, 'from' => $from, 'to' => $to]);
+        } catch (\Throwable $e) { /* ignore */
+        }
         $w = ['(total_amount - amount_paid) > 0'];
         $p = [];
         if (!empty($_GET['client_id'])) {
@@ -2616,6 +2760,17 @@ if (str_starts_with($path, '/api/v1')) {
             $sql .= ' ORDER BY p.id DESC';
             $rows = DB::query($sql, $params);
         }
+        // Audit: consultation liste produits
+        try {
+            $scope = $depId !== null ? sprintf('dépôt #%d', (int)$depId) : 'tous dépôts';
+            $qInfo = $q !== '' ? sprintf(" avec recherche '%s'", $q) : '';
+            audit_log_natural(
+                sprintf('Consultation de la liste des produits (%s%s)', $scope, $qInfo),
+                'produits_consultation',
+                ['depot_id' => $depId, 'q' => $q, 'only_in_stock' => $onlyInStock]
+            );
+        } catch (\Throwable $e) { /* ignore */
+        }
         echo json_encode($rows);
         exit;
     }
@@ -2645,6 +2800,17 @@ if (str_starts_with($path, '/api/v1')) {
         }
         DB::execute('INSERT INTO seller_rounds(depot_id,user_id,status,cash_turned_in,assigned_at) VALUES(:d,:u,\'open\',0,NOW())', [':d' => $depotId, ':u' => $userId]);
         $rid = (int)DB::query('SELECT LAST_INSERT_ID() id')[0]['id'];
+        // Audit: ouverture de tournée
+        try {
+            $uRow = DB::query('SELECT name FROM users WHERE id=:id', [':id' => $userId])[0] ?? null;
+            $uName = (string)($uRow['name'] ?? ('livreur#' . $userId));
+            audit_log_natural(
+                sprintf("Ouverture d'une tournée pour le livreur %s au dépôt #%d", $uName, $depotId),
+                'tournee_ouverture',
+                ['round_id' => $rid, 'user_id' => $userId, 'depot_id' => $depotId]
+            );
+        } catch (\Throwable $e) { /* ignore */
+        }
         echo json_encode(['round' => ['id' => $rid, 'depot_id' => $depotId, 'user_id' => $userId, 'status' => 'open']]);
         exit;
     }
@@ -2706,6 +2872,18 @@ if (str_starts_with($path, '/api/v1')) {
             ]
         );
 
+        // Audit: clôture de tournée
+        try {
+            $uRow = DB::query('SELECT name FROM users WHERE id=:id', [':id' => (int)$round['user_id']])[0] ?? null;
+            $uName = (string)($uRow['name'] ?? ('livreur#' . (int)$round['user_id']));
+            $amt = (int)$cashTurnedIn;
+            audit_log_natural(
+                sprintf("Clôture de la tournée #%d du livreur %s avec remise de caisse de %s", $rid, $uName, format_fcfa($amt)),
+                'tournee_cloture',
+                ['round_id' => $rid, 'user_id' => (int)$round['user_id'], 'cash_turned_in' => $amt]
+            );
+        } catch (\Throwable $e) { /* ignore */
+        }
         echo json_encode([
             'success' => true,
             'id' => $rid,
@@ -2869,6 +3047,16 @@ if (str_starts_with($path, '/api/v1')) {
         } else {
             $rows = DB::query('SELECT s.depot_id, d.name AS depot_name, d.code AS depot_code, s.quantity FROM stocks s JOIN depots d ON d.id = s.depot_id WHERE s.product_id = :p AND s.depot_id = :dep ORDER BY d.name ASC', [':p' => $pid, ':dep' => $userDepotId]);
         }
+        // Audit: consultation stocks par produit
+        try {
+            $scope = $role === 'admin' ? 'tous dépôts' : sprintf('dépôt #%d', (int)$userDepotId);
+            audit_log_natural(
+                sprintf('Consultation des stocks du produit #%d (%s)', $pid, $scope),
+                'stocks_consultation',
+                ['product_id' => $pid, 'depot_id' => ($role === 'admin' ? null : $userDepotId)]
+            );
+        } catch (\Throwable $e) { /* ignore */
+        }
         echo json_encode($rows);
         exit;
     }
@@ -2894,6 +3082,15 @@ if (str_starts_with($path, '/api/v1')) {
                 Stock::adjust($dep, $pid, 'in', $qty);
             }
         }
+        // Audit: création produit
+        try {
+            audit_log_natural(
+                sprintf("Création du produit '%s' (SKU %s, PU %s)", (string)$rawName, (string)$sku, format_fcfa((int)($data['unit_price'] ?? 0))),
+                'produit_creation',
+                ['product_id' => $pid, 'sku' => $sku, 'unit_price' => (int)($data['unit_price'] ?? 0)]
+            );
+        } catch (\Throwable $e) { /* ignore */
+        }
         echo json_encode(['created' => true, 'id' => $pid, 'sku' => $sku, 'image_path' => $img]);
         exit;
     }
@@ -2906,6 +3103,15 @@ if (str_starts_with($path, '/api/v1')) {
             http_response_code(404);
             echo json_encode(['error' => 'Not found']);
             exit;
+        }
+        // Audit: consultation fiche produit
+        try {
+            audit_log_natural(
+                sprintf("Consultation du produit #%d (%s)", (int)$row['id'], (string)$row['name']),
+                'produit_consultation',
+                ['product_id' => (int)$row['id']]
+            );
+        } catch (\Throwable $e) { /* ignore */
         }
         echo json_encode($row);
         exit;
@@ -2942,6 +3148,15 @@ if (str_starts_with($path, '/api/v1')) {
                     Stock::adjust($dep, $id, 'in', $qty);
                 }
             }
+            // Audit: mise à jour produit (JSON)
+            try {
+                audit_log_natural(
+                    sprintf("Mise à jour du produit #%d: nom='%s', SKU='%s', PU=%s", $id, (string)($data['name'] ?? 'Produit'), (string)($data['sku'] ?? ''), format_fcfa((int)($data['unit_price'] ?? 0))),
+                    'produit_mise_a_jour',
+                    ['product_id' => $id]
+                );
+            } catch (\Throwable $e) { /* ignore */
+            }
             echo json_encode(['updated' => true]);
         } else {
             $data = $_POST;
@@ -2972,6 +3187,15 @@ if (str_starts_with($path, '/api/v1')) {
                     (new StockMovement())->move($dep, $id, 'in', $qty, date('Y-m-d H:i:s'), null, 'edit');
                     Stock::adjust($dep, $id, 'in', $qty);
                 }
+            }
+            // Audit: mise à jour produit (multipart)
+            try {
+                audit_log_natural(
+                    sprintf("Mise à jour du produit #%d (multipart): nom='%s', SKU='%s', PU=%s", $id, (string)($data['name'] ?? 'Produit'), (string)($data['sku'] ?? ''), format_fcfa((int)($data['unit_price'] ?? 0))),
+                    'produit_mise_a_jour',
+                    ['product_id' => $id]
+                );
+            } catch (\Throwable $e) { /* ignore */
             }
             echo json_encode(['updated' => true, 'image_path' => $img]);
         }
@@ -3013,6 +3237,15 @@ if (str_starts_with($path, '/api/v1')) {
                     (new StockMovement())->move($dep, $id, 'in', $qty, date('Y-m-d H:i:s'), null, 'edit');
                     Stock::adjust($dep, $id, 'in', $qty);
                 }
+            }
+            // Audit: mise à jour produit (override)
+            try {
+                audit_log_natural(
+                    sprintf("Mise à jour du produit #%d (override): nom='%s', SKU='%s', PU=%s", $id, (string)($data['name'] ?? 'Produit'), (string)($data['sku'] ?? ''), format_fcfa((int)($data['unit_price'] ?? 0))),
+                    'produit_mise_a_jour',
+                    ['product_id' => $id]
+                );
+            } catch (\Throwable $e) { /* ignore */
             }
             echo json_encode(['updated' => true, 'image_path' => $img]);
             exit;
@@ -3545,6 +3778,13 @@ if (str_starts_with($path, '/api/v1')) {
         requirePermission($u, 'users', 'edit');
         $id = (int)$m[1];
         DB::execute('UPDATE users SET active=0, updated_at=NOW() WHERE id=:id', [':id' => $id]);
+        // Audit: désactivation utilisateur
+        try {
+            $row = DB::query('SELECT name FROM users WHERE id=:id', [':id' => $id])[0] ?? null;
+            $name = (string)($row['name'] ?? ('utilisateur#' . $id));
+            audit_log_natural(sprintf('Désactivation de l’utilisateur %s (ID #%d)', $name, $id), 'user_desactivation', ['user_id' => $id]);
+        } catch (\Throwable $e) { /* ignore */
+        }
         echo json_encode(['deactivated' => true]);
         exit;
     }
@@ -3554,6 +3794,13 @@ if (str_starts_with($path, '/api/v1')) {
         requirePermission($u, 'users', 'edit');
         $id = (int)$m[1];
         DB::execute('UPDATE users SET active=1, updated_at=NOW() WHERE id=:id', [':id' => $id]);
+        // Audit: activation utilisateur
+        try {
+            $row = DB::query('SELECT name FROM users WHERE id=:id', [':id' => $id])[0] ?? null;
+            $name = (string)($row['name'] ?? ('utilisateur#' . $id));
+            audit_log_natural(sprintf('Activation de l’utilisateur %s (ID #%d)', $name, $id), 'user_activation', ['user_id' => $id]);
+        } catch (\Throwable $e) { /* ignore */
+        }
         echo json_encode(['activated' => true]);
         exit;
     }
@@ -3609,6 +3856,13 @@ if (str_starts_with($path, '/api/v1')) {
         DB::execute('INSERT INTO orders(reference,supplier,status,total_amount,ordered_at,created_at) VALUES(:r,:s,:st,:t,NOW(),NOW())', [':r' => $ref, ':s' => $supplier, ':st' => $status, ':t' => $total]);
         $orderId = (int)DB::query('SELECT LAST_INSERT_ID() id')[0]['id'];
         DB::execute('UPDATE orders SET total_amount_remaining=:rem WHERE id=:id', [':rem' => $total, ':id' => $orderId]);
+        // Audit: achat/commande (langage naturel)
+        $supplierName = (string)($supplier ?? 'fournisseur inconnu');
+        audit_log_natural(
+            sprintf("Création d'une commande fournisseur %s pour un total de %s (référence %s)", $supplierName, format_fcfa($total), $ref),
+            'achat_commande',
+            ['order_id' => $orderId, 'reference' => $ref, 'supplier' => $supplierName, 'total' => (int)$total, 'status' => $status]
+        );
         foreach ($items as $it) {
             DB::execute('INSERT INTO order_items(order_id,product_id,initial_quantity,quantity,unit_cost,subtotal,created_at) VALUES(:o,:p,:iq,:q,:c,:st,NOW())', [':o' => $orderId, ':p' => (int)$it['product_id'], ':iq' => (int)$it['quantity'], ':q' => (int)$it['quantity'], ':c' => (int)$it['unit_cost'], ':st' => ((int)$it['unit_cost'] * (int)$it['quantity'])]);
             // Si reçu, on impacte le stock; sinon, on ne touche pas au stock
@@ -3704,20 +3958,57 @@ if (str_starts_with($path, '/api/v1')) {
             $remainTotal = (int)($remainRows[0]['remain_total'] ?? 0);
             $newStatus = $remain > 0 ? 'partially_received' : 'received';
             DB::execute('UPDATE orders SET status=:st,total_amount_remaining=:rt,updated_at=NOW() WHERE id=:id', [':st' => $newStatus, ':rt' => $remainTotal, ':id' => $id]);
+            // Audit: réception partielle/total
+            try {
+                audit_log_natural(
+                    sprintf(
+                        "Réception %s de la commande #%d (référence %s) pour un montant restant de %s",
+                        $remain > 0 ? 'partielle' : 'totale',
+                        $id,
+                        $ref,
+                        format_fcfa($remainTotal)
+                    ),
+                    'reception_commande',
+                    ['order_id' => $id, 'reference' => $ref, 'remaining' => $remain, 'remaining_total' => (int)$remainTotal, 'status' => $newStatus]
+                );
+            } catch (\Throwable $e) { /* ignore */
+            }
             echo json_encode(['received' => true, 'partial' => $remain > 0, 'remaining' => $remain, 'remaining_total' => $remainTotal, 'status' => $newStatus]);
         } else {
             // Réception totale (ancienne logique)
-            foreach ($dbItems as $it) {
+            $totalReturned = 0;
+            foreach ($items as $it) {
                 $pid = (int)$it['product_id'];
                 $qty = (int)$it['quantity']; // restant
                 if ($qty > 0) {
                     (new StockMovement())->move($depotId, $pid, 'in', $qty, date('Y-m-d H:i:s'), null, 'order:' . $ref);
+                    $totalReturned += $qty;
                     Stock::adjust($depotId, $pid, 'in', $qty);
+                }
+                // Audit: retour de quantités
+                try {
+                    $uRow = DB::query('SELECT u.name AS user_name FROM seller_rounds sr JOIN users u ON u.id=sr.user_id WHERE sr.id=:id', [':id' => $rid])[0] ?? null;
+                    $uName = (string)($uRow['user_name'] ?? 'livreur inconnu');
+                    audit_log_natural(
+                        sprintf("Retour de %d unités vers le dépôt pour la tournée #%d du livreur %s", (int)$totalReturned, $rid, $uName),
+                        'tournee_retour',
+                        ['round_id' => $rid, 'total_returned' => (int)$totalReturned]
+                    );
+                } catch (\Throwable $e) { /* ignore */
                 }
                 // mettre à zéro quantité restante
                 DB::execute('UPDATE order_items SET quantity=0 WHERE order_id=:o AND product_id=:p', [':o' => $id, ':p' => $pid]);
             }
             DB::execute('UPDATE orders SET status="received", total_amount_remaining=0, ordered_at=NOW(), updated_at=NOW() WHERE id=:id', [':id' => $id]);
+            // Audit: réception totale
+            try {
+                audit_log_natural(
+                    sprintf("Réception totale de la commande #%d (référence %s)", $id, $ref),
+                    'reception_commande',
+                    ['order_id' => $id, 'reference' => $ref]
+                );
+            } catch (\Throwable $e) { /* ignore */
+            }
             echo json_encode(['received' => true, 'partial' => false, 'remaining' => 0, 'remaining_total' => 0, 'status' => 'received']);
         }
         exit;
@@ -3823,6 +4114,17 @@ if (str_starts_with($path, '/api/v1')) {
         Stock::adjust($from, $pid, 'out', $qty);
         (new StockMovement())->move($to, $pid, 'in', $qty, date('Y-m-d H:i:s'), null, 'from:' . $from);
         Stock::adjust($to, $pid, 'in', $qty);
+        // Audit: transfert de stock
+        try {
+            $pRow = DB::query('SELECT name FROM products WHERE id=:id', [':id' => $pid])[0] ?? null;
+            $pName = (string)($pRow['name'] ?? ('produit#' . $pid));
+            audit_log_natural(
+                sprintf("Transfert de %d unité(s) de '%s' du dépôt #%d vers #%d", $qty, $pName, $from, $to),
+                'stock_transfert',
+                ['product_id' => $pid, 'from_depot_id' => $from, 'to_depot_id' => $to, 'quantity' => $qty]
+            );
+        } catch (\Throwable $e) { /* ignore */
+        }
         echo json_encode(['transferred' => true, 'from' => $from, 'to' => $to, 'product_id' => $pid, 'quantity' => $qty]);
         exit;
     }
@@ -3863,6 +4165,18 @@ if (str_starts_with($path, '/api/v1')) {
             . 'LEFT JOIN depots dt ON dt.id = CASE WHEN t.note LIKE "to:%" THEN CAST(SUBSTRING(t.note,4) AS UNSIGNED) ELSE NULL END '
             . $whereSql . ' ORDER BY t.moved_at DESC LIMIT ' . $limit;
         $rows = DB::query($sql, $params);
+        // Audit: consultation historique des transferts
+        try {
+            $filters = [
+                'product_id' => ($_GET['product_id'] ?? null),
+                'from_depot_id' => ($_GET['from_depot_id'] ?? null),
+                'to_depot_id' => ($_GET['to_depot_id'] ?? null),
+                'from' => ($_GET['from'] ?? null),
+                'to' => ($_GET['to'] ?? null)
+            ];
+            audit_log_natural('Consultation de l\'historique des transferts', 'stock_transferts_consultation', $filters);
+        } catch (\Throwable $e) { /* ignore */
+        }
         echo json_encode($rows);
         exit;
     }
@@ -4063,8 +4377,12 @@ if (str_starts_with($path, '/api/v1')) {
         fputcsv($out, ['Encours total', format_fcfa($balancesTotal)]);
         fclose($out);
         try {
-            audit_log((int)$auth['id'], 'export', 'finance_stock', null, $path, 'GET', ['from' => $from, 'to' => $to, 'depot' => $paramDepot]);
-        } catch (\Throwable $e) {
+            audit_log_natural(
+                sprintf('Export CSV du point financier & stock (période %s → %s, dépôt %s)', $from ?: '-', $to ?: '-', ($paramDepot ?? (($role === 'gerant') ? $userDepotId : 'Tous'))),
+                'finance_stock_export_csv',
+                ['from' => $from, 'to' => $to, 'depot' => $paramDepot]
+            );
+        } catch (\Throwable $e) { /* ignore */
         }
         exit;
     }
@@ -4175,8 +4493,12 @@ if (str_starts_with($path, '/api/v1')) {
         $pdf->writeHTML($html, true, false, true, false, '');
         $pdf->Output('point_financier_stock.pdf', 'I');
         try {
-            audit_log((int)$auth['id'], 'export', 'finance_stock', null, $path, 'GET', ['from' => $from, 'to' => $to, 'depot' => $paramDepot]);
-        } catch (\Throwable $e) {
+            audit_log_natural(
+                sprintf('Export PDF du point financier & stock (période %s → %s, dépôt %s)', $from ?: '-', $to ?: '-', ($paramDepot ?? (($role === 'gerant') ? $userDepotId : 'Tous'))),
+                'finance_stock_export_pdf',
+                ['from' => $from, 'to' => $to, 'depot' => $paramDepot]
+            );
+        } catch (\Throwable $e) { /* ignore */
         }
         exit;
     }
@@ -4290,6 +4612,11 @@ if (str_starts_with($path, '/api/v1')) {
             ]);
         }
         fclose($out);
+        // Audit: export CSV audit logs (naturel)
+        try {
+            audit_log_natural('Export CSV du journal d\'audit', 'audit_logs_export_csv', ['filters' => ['action' => $action, 'entity' => $entity, 'user_id' => $userId, 'from' => $from, 'to' => $to, 'q' => $q]]);
+        } catch (\Throwable $e) { /* ignore */
+        }
         exit;
     }
     if ($path === '/api/v1/audit-logs/export-pdf' && $_SERVER['REQUEST_METHOD'] === 'GET') {
@@ -4348,10 +4675,10 @@ if (str_starts_with($path, '/api/v1')) {
         $sql .= ' ORDER BY al.id DESC LIMIT ' . $limit;
         $rows = DB::query($sql, $params);
 
-        // Audit explicite export
+        // Audit: export PDF audit logs (naturel)
         try {
-            audit_log((int)$u['id'], 'export', 'audit_logs', null, $path, 'GET');
-        } catch (\Throwable $e) {
+            audit_log_natural('Export PDF du journal d\'audit', 'audit_logs_export_pdf', ['filters' => ['action' => $action, 'entity' => $entity, 'user_id' => $userId, 'from' => $from, 'to' => $to, 'q' => $q]]);
+        } catch (\Throwable $e) { /* ignore */
         }
 
         $pdf = new \TCPDF('L', 'mm', 'A4');
@@ -4737,9 +5064,14 @@ if (str_starts_with($path, '/api/v1')) {
         DB::execute('INSERT INTO sale_payments(sale_id,amount,method,user_id,paid_at) VALUES(:s,:a,:m,:u,NOW())', [':s' => $sid, ':a' => $amount, ':m' => $method, ':u' => (int)$auth['id']]);
         // Update sale aggregate + status
         DB::execute('UPDATE sales SET amount_paid = amount_paid + :a, status = CASE WHEN amount_paid + :a >= total_amount THEN "paid" ELSE "due" END, updated_at=NOW() WHERE id=:id', [':a' => $amount, ':id' => $sid]);
+        // Audit: encaissement sur vente
         try {
-            audit_log((int)$auth['id'], 'add', 'sale_payments', $sid, $path, 'POST', ['amount' => $amount]);
-        } catch (\Throwable $e) {
+            audit_log_natural(
+                sprintf("Encaissement sur vente #%d: %s, méthode %s", $sid, format_fcfa((int)$amount), (string)($method ?? 'inconnu')),
+                'vente_encaissement',
+                ['sale_id' => $sid, 'amount' => (int)$amount, 'method' => $method]
+            );
+        } catch (\Throwable $e) { /* ignore */
         }
         $row = DB::query('SELECT id,total_amount,amount_paid FROM sales WHERE id=:id', [':id' => $sid])[0] ?? null;
         echo json_encode(['ok' => true, 'sale' => $row]);
@@ -4941,8 +5273,12 @@ if (str_starts_with($path, '/api/v1')) {
         fclose($out);
         // Audit export
         try {
-            audit_log((int)$auth['id'], 'export', 'dashboard', null, $path, 'GET', ['days' => $days, 'depot' => $paramDepot, 'threshold' => $threshold]);
-        } catch (\Throwable $e) {
+            audit_log_natural(
+                sprintf('Export CSV du tableau de bord (%dj, seuil %d, dépôt %s)', $days, $threshold, ($paramDepot ?? (($role === 'gerant') ? $userDepotId : '—'))),
+                'dashboard_export_csv',
+                ['days' => $days, 'depot' => $paramDepot, 'threshold' => $threshold]
+            );
+        } catch (\Throwable $e) { /* ignore */
         }
         exit;
     }
@@ -5139,8 +5475,12 @@ if (str_starts_with($path, '/api/v1')) {
         $pdf->writeHTML($html, true, false, true, false, '');
         $pdf->Output('dashboard.pdf', 'I');
         try {
-            audit_log((int)$auth['id'], 'export', 'dashboard', null, $path, 'GET', ['days' => $days, 'depot' => $paramDepot, 'threshold' => $threshold]);
-        } catch (\Throwable $e) {
+            audit_log_natural(
+                sprintf('Export PDF du tableau de bord (%dj, seuil %d, dépôt %s)', $days, $threshold, ($paramDepot ?? (($role === 'gerant') ? $userDepotId : '—'))),
+                'dashboard_export_pdf',
+                ['days' => $days, 'depot' => $paramDepot, 'threshold' => $threshold]
+            );
+        } catch (\Throwable $e) { /* ignore */
         }
         exit;
     }
@@ -5288,6 +5628,12 @@ if ($path === '/suppliers') {
         echo 'Accès refusé';
         exit;
     }
+    try {
+        if (!empty($_SESSION['user_id'])) {
+            audit_log_natural('Consultation de la page fournisseurs', 'page_suppliers_consultation', ['route' => '/suppliers']);
+        }
+    } catch (\Throwable $e) {
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/suppliers.php';
     include __DIR__ . '/../views/layout/footer.php';
@@ -5306,6 +5652,12 @@ if ($path === '/suppliers/new') {
         http_response_code(403);
         echo 'Accès refusé';
         exit;
+    }
+    try {
+        if (!empty($_SESSION['user_id'])) {
+            audit_log_natural('Ouverture du formulaire nouveau fournisseur', 'page_suppliers_new_consultation', ['route' => '/suppliers/new']);
+        }
+    } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/suppliers_form.php';
@@ -5326,7 +5678,7 @@ if ($path === '/' || $path === '/dashboard') {
         exit;
     }
     try {
-        audit_log($uid, 'view', 'dashboard', null, $path, 'GET');
+        audit_log_natural('Consultation du tableau de bord', 'page_dashboard_consultation', ['route' => $path]);
     } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
@@ -5437,7 +5789,9 @@ if ($path === '/depots/map') {
         exit;
     }
     try {
-        audit_log((int)$_SESSION['user_id'], 'view', 'depots_map', null, $path, 'GET');
+        if (!empty($_SESSION['user_id'])) {
+            audit_log_natural('Consultation de la carte des dépôts', 'page_depots_map_consultation', ['route' => '/depots-map']);
+        }
     } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
@@ -5458,7 +5812,9 @@ if ($path === '/products') {
         }
     }
     try {
-        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'products', null, $path, 'GET');
+        if (!empty($_SESSION['user_id'])) {
+            audit_log_natural('Consultation de la page produits', 'page_products_consultation', ['route' => '/products']);
+        }
     } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
@@ -5479,7 +5835,9 @@ if ($path === '/products/new') {
         exit;
     }
     try {
-        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'products_new', null, $path, 'GET');
+        if (!empty($_SESSION['user_id'])) {
+            audit_log_natural('Ouverture du formulaire nouveau produit', 'page_products_new_consultation', ['route' => '/products/new']);
+        }
     } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
@@ -5500,7 +5858,9 @@ if ($path === '/products/edit') {
         exit;
     }
     try {
-        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'products_edit', null, $path, 'GET');
+        if (!empty($_SESSION['user_id'])) {
+            audit_log_natural('Ouverture du formulaire édition produit', 'page_products_edit_consultation', ['route' => '/products/edit']);
+        }
     } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
@@ -5510,7 +5870,9 @@ if ($path === '/products/edit') {
 }
 if ($path === '/products/view') {
     try {
-        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'product_view', null, $path, 'GET');
+        if (!empty($_SESSION['user_id'])) {
+            audit_log_natural('Consultation de la fiche produit', 'page_product_view_consultation', ['route' => '/products/view']);
+        }
     } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
@@ -5529,7 +5891,9 @@ if ($path === '/clients') {
         }
     }
     try {
-        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'clients', null, $path, 'GET');
+        if (!empty($_SESSION['user_id'])) {
+            audit_log_natural('Consultation de la page clients', 'page_clients_consultation', ['route' => '/clients']);
+        }
     } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
@@ -5539,7 +5903,9 @@ if ($path === '/clients') {
 }
 if ($path === '/clients/new') {
     try {
-        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'clients_new', null, $path, 'GET');
+        if (!empty($_SESSION['user_id'])) {
+            audit_log_natural('Ouverture du formulaire nouveau client', 'page_clients_new_consultation', ['route' => '/clients/new']);
+        }
     } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
@@ -5549,7 +5915,9 @@ if ($path === '/clients/new') {
 }
 if ($path === '/clients/edit') {
     try {
-        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'clients_edit', null, $path, 'GET');
+        if (!empty($_SESSION['user_id'])) {
+            audit_log_natural('Ouverture du formulaire édition client', 'page_clients_edit_consultation', ['route' => '/clients/edit']);
+        }
     } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
@@ -5569,7 +5937,9 @@ if ($path === '/users') {
         }
     }
     try {
-        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'users', null, $path, 'GET');
+        if (!empty($_SESSION['user_id'])) {
+            audit_log_natural('Consultation de la page utilisateurs', 'page_users_consultation', ['route' => '/users']);
+        }
     } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
@@ -5588,7 +5958,9 @@ if ($path === '/users/new') {
         }
     }
     try {
-        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'users_new', null, $path, 'GET');
+        if (!empty($_SESSION['user_id'])) {
+            audit_log_natural('Ouverture du formulaire nouvel utilisateur', 'page_users_new_consultation', ['route' => '/users/new']);
+        }
     } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
@@ -5665,7 +6037,9 @@ if ($path === '/orders') {
         }
     }
     try {
-        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'orders', null, $path, 'GET');
+        if (!empty($_SESSION['user_id'])) {
+            audit_log_natural('Consultation de la page commandes', 'page_orders_consultation', ['route' => '/orders']);
+        }
     } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
@@ -5676,7 +6050,9 @@ if ($path === '/orders') {
 // Orders new form
 if ($path === '/orders/new') {
     try {
-        if (!empty($_SESSION['user_id'])) audit_log((int)$_SESSION['user_id'], 'view', 'orders_new', null, $path, 'GET');
+        if (!empty($_SESSION['user_id'])) {
+            audit_log_natural('Ouverture du formulaire nouvelle commande', 'page_orders_new_consultation', ['route' => '/orders/new']);
+        }
     } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
@@ -5712,10 +6088,13 @@ if ($path === '/orders/export') {
         echo 'TCPDF non installé. Installez avec: composer require tecnickcom/tcpdf';
         exit;
     }
-    // Audit export
+    // Audit export (langage naturel)
     try {
-        $actor = !empty($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : (apiUser()['id'] ?? null);
-        audit_log($actor, 'export', 'orders', (int)$ord['id'], $path, 'GET', ['reference' => $ord['reference'] ?? null]);
+        $msg = sprintf('Export PDF de la commande #%d (%s)', (int)$ord['id'], (string)($ord['reference'] ?? ''));
+        audit_log_natural($msg, 'order_export_pdf', [
+            'order_id' => (int)$ord['id'],
+            'reference' => (string)($ord['reference'] ?? '')
+        ]);
     } catch (\Throwable $e) {
     }
     // Branded PDF
@@ -5794,11 +6173,14 @@ if ($path === '/users/export') {
         exit;
     }
 
-    // --- Audit ---
+    // --- Audit (naturel) ---
     try {
-        $actor = !empty($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : (apiUser()['id'] ?? null);
-        audit_log($actor, 'export', 'users', (int)$usr['id'], $path, 'GET');
-    } catch (\Throwable $e) {
+        audit_log_natural(
+            sprintf("Export PDF de la fiche utilisateur #%d (%s)", (int)$usr['id'], (string)$usr['name']),
+            'user_export_pdf',
+            ['user_id' => (int)$usr['id']]
+        );
+    } catch (\Throwable $e) { /* ignore */
     }
 
     // --- Init PDF ---
@@ -6070,10 +6452,13 @@ if (preg_match('#^/api/v1/products/(\d+)/export$#', $path, $pm) && $_SERVER['REQ
         echo 'TCPDF non installé.';
         exit;
     }
-    // Audit
+    // Audit (langage naturel)
     try {
-        $actorId = $actor ?: (apiUser()['id'] ?? null);
-        audit_log($actorId, 'export', 'products', (int)$prod['id'], $path, 'GET');
+        $msg = sprintf('Export PDF de la fiche produit #%d (%s)', (int)$prod['id'], (string)($prod['name'] ?? ''));
+        audit_log_natural($msg, 'product_export_pdf', [
+            'product_id' => (int)$prod['id'],
+            'name' => (string)($prod['name'] ?? '')
+        ]);
     } catch (\Throwable $e) {
     }
 
@@ -6177,6 +6562,12 @@ if ($path === '/transfers' || $path === '/transferts') {
         echo 'Accès refusé';
         exit;
     }
+    try {
+        if (!empty($_SESSION['user_id'])) {
+            audit_log_natural('Consultation de la page transferts de stock', 'page_transfers_consultation', ['route' => $path]);
+        }
+    } catch (\Throwable $e) {
+    }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/transfers.php';
     include __DIR__ . '/../views/layout/footer.php';
@@ -6193,6 +6584,12 @@ if ($path === '/stocks') {
             echo 'Accès refusé';
             exit;
         }
+    }
+    try {
+        if (!empty($_SESSION['user_id'])) {
+            audit_log_natural('Consultation de la page stocks par dépôt', 'page_stocks_consultation', ['route' => '/stocks']);
+        }
+    } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/stocks.php';
@@ -6215,7 +6612,7 @@ if ($path === '/sales-quick') {
         exit;
     }
     try {
-        audit_log((int)$_SESSION['user_id'], 'view', 'sales_quick', null, $path, 'GET');
+        audit_log_natural('Ouverture de la page Vente rapide', 'page_sales_quick_consultation', ['route' => '/sales-quick']);
     } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
@@ -6238,7 +6635,7 @@ if ($path === '/sales') {
         exit;
     }
     try {
-        audit_log((int)$_SESSION['user_id'], 'view', 'sales', null, $path, 'GET');
+        audit_log_natural('Consultation de la page ventes', 'page_sales_consultation', ['route' => '/sales']);
     } catch (\Throwable $e) {
     }
     include __DIR__ . '/../views/layout/header.php';
