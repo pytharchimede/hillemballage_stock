@@ -5620,9 +5620,12 @@ if (str_starts_with($path, '/api/v1') || str_starts_with($path, '/public/api/v1'
             echo json_encode(['error' => 'Tournée introuvable']);
             exit;
         }
-        $sales = DB::query('SELECT s.id, s.client_id, c.name AS client_name, s.total_amount, s.paid_amount, s.status, s.created_at FROM sales s LEFT JOIN clients c ON c.id=s.client_id WHERE s.round_id=:r', [':r' => $roundId]);
-        $items = DB::query('SELECT si.id, si.sale_id, si.product_id, p.name AS product_name, si.quantity, si.returned_quantity, si.unit_price FROM sale_items si LEFT JOIN products p ON p.id=si.product_id WHERE si.round_id=:r', [':r' => $roundId]);
-        $collections = DB::query('SELECT id, client_id, amount, method, created_at FROM collections WHERE round_id=:r', [':r' => $roundId]);
+        // Ventes liées à la tournée
+        $sales = DB::query('SELECT s.id, s.client_id, c.name AS client_name, s.total_amount, s.amount_paid, s.status, s.created_at FROM sales s LEFT JOIN clients c ON c.id=s.client_id WHERE s.seller_round_id=:r', [':r' => $roundId]);
+        // Articles affectés à la tournée (seller_round_items)
+        $items = DB::query('SELECT sri.id, sri.round_id, sri.product_id, p.name AS product_name, sri.qty_assigned, sri.qty_returned FROM seller_round_items sri LEFT JOIN products p ON p.id=sri.product_id WHERE sri.round_id=:r', [':r' => $roundId]);
+        // Encaissements via sale_payments
+        $collections = DB::query('SELECT sp.id, s.client_id, sp.amount, sp.method, sp.paid_at AS created_at FROM sale_payments sp JOIN sales s ON s.id=sp.sale_id WHERE s.seller_round_id=:r', [':r' => $roundId]);
         echo json_encode(['round' => $round, 'sales' => $sales, 'items' => $items, 'collections' => $collections]);
         exit;
     }
@@ -5639,36 +5642,33 @@ if (str_starts_with($path, '/api/v1') || str_starts_with($path, '/public/api/v1'
         }
         DB::execute('START TRANSACTION');
         try {
+            // Corrections des articles de tournée: seller_round_item (qty_assigned, qty_returned)
             foreach (($payload['items'] ?? []) as $it) {
                 $id = (int)($it['id'] ?? 0);
-                $q = isset($it['quantity']) ? (int)$it['quantity'] : null;
-                $rq = isset($it['returned_quantity']) ? (int)$it['returned_quantity'] : null;
-                $up = isset($it['unit_price']) ? (int)$it['unit_price'] : null;
+                $qtyAssigned = isset($it['qty_assigned']) ? (int)$it['qty_assigned'] : null;
+                $qtyReturned = isset($it['qty_returned']) ? (int)$it['qty_returned'] : null;
                 if ($id > 0) {
                     $sets = [];
                     $params = [':id' => $id];
-                    if ($q !== null) {
-                        $sets[] = 'quantity=:q';
-                        $params[':q'] = $q;
+                    if ($qtyAssigned !== null) {
+                        $sets[] = 'qty_assigned=:qa';
+                        $params[':qa'] = $qtyAssigned;
                     }
-                    if ($rq !== null) {
-                        $sets[] = 'returned_quantity=:rq';
-                        $params[':rq'] = $rq;
+                    if ($qtyReturned !== null) {
+                        $sets[] = 'qty_returned=:qr';
+                        $params[':qr'] = $qtyReturned;
                     }
-                    if ($up !== null) {
-                        $sets[] = 'unit_price=:up';
-                        $params[':up'] = $up;
-                    }
-                    if ($sets) DB::execute('UPDATE sale_items SET ' . implode(',', $sets) . ' WHERE id=:id', $params);
+                    if ($sets) DB::execute('UPDATE seller_round_items SET ' . implode(',', $sets) . ' WHERE id=:id', $params);
                 }
             }
             foreach (($payload['sales'] ?? []) as $s) {
                 $sid = (int)($s['id'] ?? 0);
-                $paid = isset($s['paid_amount']) ? (int)$s['paid_amount'] : null;
+                $paid = isset($s['amount_paid']) ? (int)$s['amount_paid'] : null;
                 if ($sid > 0 && $paid !== null) {
-                    DB::execute('UPDATE sales SET paid_amount=:p WHERE id=:id', [':p' => $paid, ':id' => $sid]);
+                    DB::execute('UPDATE sales SET amount_paid=:p WHERE id=:id', [':p' => $paid, ':id' => $sid]);
                 }
             }
+            // Ajustements sur les encaissements: sale_payments
             foreach (($payload['collections'] ?? []) as $c) {
                 $cid = (int)($c['id'] ?? 0);
                 $amt = isset($c['amount']) ? (int)$c['amount'] : null;
@@ -5684,17 +5684,17 @@ if (str_starts_with($path, '/api/v1') || str_starts_with($path, '/public/api/v1'
                         $sets[] = 'method=:m';
                         $params[':m'] = $method;
                     }
-                    if ($sets) DB::execute('UPDATE collections SET ' . implode(',', $sets) . ' WHERE id=:id', $params);
+                    if ($sets) DB::execute('UPDATE sale_payments SET ' . implode(',', $sets) . ' WHERE id=:id', $params);
                 }
             }
             // Recalcul strict des agrégats
             try {
                 DB::execute('UPDATE seller_rounds sr SET 
                     total_sales = (
-                        SELECT COALESCE(SUM(s.total_amount),0) FROM sales s WHERE s.round_id = sr.id
+                        SELECT COALESCE(SUM(s.total_amount),0) FROM sales s WHERE s.seller_round_id = sr.id
                     ),
                     total_paid = (
-                        SELECT COALESCE(SUM(s.paid_amount),0) FROM sales s WHERE s.round_id = sr.id
+                        SELECT COALESCE(SUM(s.amount_paid),0) FROM sales s WHERE s.seller_round_id = sr.id
                     )
                 WHERE sr.id = :r', [':r' => $roundId]);
             } catch (\Throwable $e) {
@@ -5719,7 +5719,7 @@ if (str_starts_with($path, '/api/v1') || str_starts_with($path, '/public/api/v1'
         $saleId = (int)$m[1];
         DB::execute('START TRANSACTION');
         try {
-            $sale = DB::query('SELECT id, client_id, round_id, total_amount, paid_amount FROM sales WHERE id=:id LIMIT 1', [':id' => $saleId])[0] ?? null;
+            $sale = DB::query('SELECT id, client_id, seller_round_id AS round_id, total_amount, amount_paid FROM sales WHERE id=:id LIMIT 1', [':id' => $saleId])[0] ?? null;
             if (!$sale) {
                 DB::execute('ROLLBACK');
                 http_response_code(404);
@@ -5727,19 +5727,19 @@ if (str_starts_with($path, '/api/v1') || str_starts_with($path, '/public/api/v1'
                 exit;
             }
             DB::execute('DELETE FROM sale_items WHERE sale_id=:id', [':id' => $saleId]);
-            DB::execute('DELETE FROM collections WHERE sale_id=:id', [':id' => $saleId]);
+            DB::execute('DELETE FROM sale_payments WHERE sale_id=:id', [':id' => $saleId]);
             DB::execute('DELETE FROM sales WHERE id=:id', [':id' => $saleId]);
             if (!empty($sale['client_id'])) {
-                $delta = (int)$sale['total_amount'] - (int)$sale['paid_amount'];
+                $delta = (int)$sale['total_amount'] - (int)$sale['amount_paid'];
                 DB::execute('UPDATE clients SET balance_cached = GREATEST(balance_cached - :d, 0) WHERE id=:c', [':d' => $delta, ':c' => (int)$sale['client_id']]);
             }
             if (!empty($sale['round_id'])) {
                 DB::execute('UPDATE seller_rounds sr SET 
                     total_sales = (
-                        SELECT COALESCE(SUM(s.total_amount),0) FROM sales s WHERE s.round_id = sr.id
+                        SELECT COALESCE(SUM(s.total_amount),0) FROM sales s WHERE s.seller_round_id = sr.id
                     ),
                     total_paid = (
-                        SELECT COALESCE(SUM(s.paid_amount),0) FROM sales s WHERE s.round_id = sr.id
+                        SELECT COALESCE(SUM(s.amount_paid),0) FROM sales s WHERE s.seller_round_id = sr.id
                     )
                 WHERE sr.id = :r', [':r' => (int)$sale['round_id']]);
             }
@@ -6012,9 +6012,9 @@ if ($path === '/admin/rounds/test') {
                 if (!$round) {
                     $error = 'Tournée introuvable';
                 } else {
-                    $sales = DB::query('SELECT s.id, s.client_id, c.name AS client_name, s.total_amount, s.paid_amount, s.status, s.created_at FROM sales s LEFT JOIN clients c ON c.id=s.client_id WHERE s.round_id=:r', [':r' => $roundId]);
-                    $items = DB::query('SELECT si.id, si.sale_id, si.product_id, p.name AS product_name, si.quantity, si.returned_quantity, si.unit_price FROM sale_items si JOIN sales s ON s.id=si.sale_id LEFT JOIN products p ON p.id=si.product_id WHERE s.round_id=:r', [':r' => $roundId]);
-                    $collections = DB::query('SELECT sp.id, s.client_id, sp.amount, sp.method, sp.paid_at AS created_at FROM sale_payments sp JOIN sales s ON s.id=sp.sale_id WHERE s.round_id=:r', [':r' => $roundId]);
+                    $sales = DB::query('SELECT s.id, s.client_id, c.name AS client_name, s.total_amount, s.amount_paid, s.status, s.created_at FROM sales s LEFT JOIN clients c ON c.id=s.client_id WHERE s.seller_round_id=:r', [':r' => $roundId]);
+                    $items = DB::query('SELECT sri.id, sri.round_id, sri.product_id, p.name AS product_name, sri.qty_assigned, sri.qty_returned FROM seller_round_items sri LEFT JOIN products p ON p.id=sri.product_id WHERE sri.round_id=:r', [':r' => $roundId]);
+                    $collections = DB::query('SELECT sp.id, s.client_id, sp.amount, sp.method, sp.paid_at AS created_at FROM sale_payments sp JOIN sales s ON s.id=sp.sale_id WHERE s.seller_round_id=:r', [':r' => $roundId]);
                     header('Content-Type: application/json');
                     echo json_encode(['round' => $round, 'sales' => $sales, 'items' => $items, 'collections' => $collections]);
                     exit;
@@ -6067,7 +6067,7 @@ if (preg_match('#/api/v1/admin/rounds/(\d+)$#', $path, $m) && $_SERVER['REQUEST_
         // Ventes de la tournée (schema: sales.seller_round_id, sales.amount_paid)
         $sales = DB::query('SELECT s.id, s.client_id, c.name AS client_name, s.total_amount, s.amount_paid, s.status, s.created_at FROM sales s LEFT JOIN clients c ON c.id=s.client_id WHERE s.seller_round_id=:r', [':r' => $roundId]);
         // Articles affectés à la tournée (schema: seller_round_item avec qty_assigned, qty_returned)
-        $items = DB::query('SELECT sri.id, sri.round_id, sri.product_id, p.name AS product_name, sri.qty_assigned, sri.qty_returned FROM seller_round_item sri LEFT JOIN products p ON p.id=sri.product_id WHERE sri.round_id=:r', [':r' => $roundId]);
+        $items = DB::query('SELECT sri.id, sri.round_id, sri.product_id, p.name AS product_name, sri.qty_assigned, sri.qty_returned FROM seller_round_items sri LEFT JOIN products p ON p.id=sri.product_id WHERE sri.round_id=:r', [':r' => $roundId]);
         // Encaissements: utiliser sale_payments joints aux ventes de la tournée
         $collections = DB::query('SELECT sp.id, s.client_id, sp.amount, sp.method, sp.paid_at AS created_at FROM sale_payments sp JOIN sales s ON s.id=sp.sale_id WHERE s.seller_round_id=:r', [':r' => $roundId]);
         echo json_encode(['round' => $round, 'sales' => $sales, 'items' => $items, 'collections' => $collections]);
@@ -6095,33 +6095,29 @@ if (preg_match('#/api/v1/admin/rounds/corrections$#', $path) && $_SERVER['REQUES
         // Update sale items quantities/returns
         foreach (($payload['items'] ?? []) as $it) {
             $id = (int)($it['id'] ?? 0);
-            $q = isset($it['quantity']) ? (int)$it['quantity'] : null;
-            $rq = isset($it['returned_quantity']) ? (int)$it['returned_quantity'] : null;
-            $up = isset($it['unit_price']) ? (int)$it['unit_price'] : null;
+            // Map legacy field names to seller_round_items schema
+            $qa = isset($it['qty_assigned']) ? (int)$it['qty_assigned'] : (isset($it['quantity']) ? (int)$it['quantity'] : null);
+            $qr = isset($it['qty_returned']) ? (int)$it['qty_returned'] : (isset($it['returned_quantity']) ? (int)$it['returned_quantity'] : null);
             if ($id > 0) {
                 $sets = [];
                 $params = [':id' => $id];
-                if ($q !== null) {
-                    $sets[] = 'quantity=:q';
-                    $params[':q'] = $q;
+                if ($qa !== null) {
+                    $sets[] = 'qty_assigned=:qa';
+                    $params[':qa'] = $qa;
                 }
-                if ($rq !== null) {
-                    $sets[] = 'returned_quantity=:rq';
-                    $params[':rq'] = $rq;
+                if ($qr !== null) {
+                    $sets[] = 'qty_returned=:qr';
+                    $params[':qr'] = $qr;
                 }
-                if ($up !== null) {
-                    $sets[] = 'unit_price=:up';
-                    $params[':up'] = $up;
-                }
-                if ($sets) DB::execute('UPDATE sale_items SET ' . implode(',', $sets) . ' WHERE id=:id', $params);
+                if ($sets) DB::execute('UPDATE seller_round_items SET ' . implode(',', $sets) . ' WHERE id=:id', $params);
             }
         }
         // Update sales paid amounts
         foreach (($payload['sales'] ?? []) as $s) {
             $sid = (int)($s['id'] ?? 0);
-            $paid = isset($s['paid_amount']) ? (int)$s['paid_amount'] : null;
+            $paid = isset($s['amount_paid']) ? (int)$s['amount_paid'] : null;
             if ($sid > 0 && $paid !== null) {
-                DB::execute('UPDATE sales SET paid_amount=:p WHERE id=:id', [':p' => $paid, ':id' => $sid]);
+                DB::execute('UPDATE sales SET amount_paid=:p WHERE id=:id', [':p' => $paid, ':id' => $sid]);
             }
         }
         // Update collections adjustments
@@ -6140,17 +6136,17 @@ if (preg_match('#/api/v1/admin/rounds/corrections$#', $path) && $_SERVER['REQUES
                     $sets[] = 'method=:m';
                     $params[':m'] = $method;
                 }
-                if ($sets) DB::execute('UPDATE collections SET ' . implode(',', $sets) . ' WHERE id=:id', $params);
+                if ($sets) DB::execute('UPDATE sale_payments SET ' . implode(',', $sets) . ' WHERE id=:id', $params);
             }
         }
         // Recalcule strict des agrégats de la tournée
         try {
             DB::execute('UPDATE seller_rounds sr SET 
                 total_sales = (
-                    SELECT COALESCE(SUM(s.total_amount),0) FROM sales s WHERE s.round_id = sr.id
+                    SELECT COALESCE(SUM(s.total_amount),0) FROM sales s WHERE s.seller_round_id = sr.id
                 ),
                 total_paid = (
-                    SELECT COALESCE(SUM(s.paid_amount),0) FROM sales s WHERE s.round_id = sr.id
+                    SELECT COALESCE(SUM(s.amount_paid),0) FROM sales s WHERE s.seller_round_id = sr.id
                 )
             WHERE sr.id = :r', [':r' => $roundId]);
         } catch (\Throwable $e) {
@@ -6178,7 +6174,7 @@ if (preg_match('#/api/v1/admin/sales/(\d+)$#', $path, $m) && $_SERVER['REQUEST_M
     DB::execute('START TRANSACTION');
     try {
         // Placeholder: load sale details
-        $sale = DB::query('SELECT id, client_id, round_id, total_amount, paid_amount FROM sales WHERE id=:id LIMIT 1', [':id' => $saleId])[0] ?? null;
+        $sale = DB::query('SELECT id, client_id, seller_round_id AS round_id, total_amount, amount_paid FROM sales WHERE id=:id LIMIT 1', [':id' => $saleId])[0] ?? null;
         if (!$sale) {
             DB::execute('ROLLBACK');
             http_response_code(404);
@@ -6188,27 +6184,27 @@ if (preg_match('#/api/v1/admin/sales/(\d+)$#', $path, $m) && $_SERVER['REQUEST_M
         // Delete items
         DB::execute('DELETE FROM sale_items WHERE sale_id=:id', [':id' => $saleId]);
         // Delete collections linked to this sale
-        DB::execute('DELETE FROM collections WHERE sale_id=:id', [':id' => $saleId]);
+        DB::execute('DELETE FROM sale_payments WHERE sale_id=:id', [':id' => $saleId]);
         // Delete sale
         DB::execute('DELETE FROM sales WHERE id=:id', [':id' => $saleId]);
-        // Adjust client balance (decrease due by total_amount - paid_amount)
+        // Adjust client balance (decrease due by total_amount - amount_paid)
         if (!empty($sale['client_id'])) {
-            $delta = (int)$sale['total_amount'] - (int)$sale['paid_amount'];
+            $delta = (int)$sale['total_amount'] - (int)$sale['amount_paid'];
             DB::execute('UPDATE clients SET balance_cached = GREATEST(balance_cached - :d, 0) WHERE id=:c', [':d' => $delta, ':c' => (int)$sale['client_id']]);
         }
         // Adjust round seller cash (increase remaining since sale removed)
         if (!empty($sale['round_id'])) {
-            DB::execute('UPDATE seller_rounds SET total_sales = GREATEST(total_sales - :t, 0), total_paid = GREATEST(total_paid - :p, 0) WHERE id=:r', [':t' => (int)$sale['total_amount'], ':p' => (int)$sale['paid_amount'], ':r' => (int)$sale['round_id']]);
+            DB::execute('UPDATE seller_rounds SET total_sales = GREATEST(total_sales - :t, 0), total_paid = GREATEST(total_paid - :p, 0) WHERE id=:r', [':t' => (int)$sale['total_amount'], ':p' => (int)$sale['amount_paid'], ':r' => (int)$sale['round_id']]);
         }
         // Recalcule strict des agrégats de la tournée après suppression
         try {
             if (!empty($sale['round_id'])) {
                 DB::execute('UPDATE seller_rounds sr SET 
                     total_sales = (
-                        SELECT COALESCE(SUM(s.total_amount),0) FROM sales s WHERE s.round_id = sr.id
+                        SELECT COALESCE(SUM(s.total_amount),0) FROM sales s WHERE s.seller_round_id = sr.id
                     ),
                     total_paid = (
-                        SELECT COALESCE(SUM(s.paid_amount),0) FROM sales s WHERE s.round_id = sr.id
+                        SELECT COALESCE(SUM(s.amount_paid),0) FROM sales s WHERE s.seller_round_id = sr.id
                     )
                 WHERE sr.id = :r', [':r' => (int)$sale['round_id']]);
             }
