@@ -37,6 +37,7 @@
             $roleRow = $uid ? (\App\Support\DB::query('SELECT role FROM users WHERE id=:id', [':id' => $uid])[0] ?? null) : null;
             if ($roleRow && ($roleRow['role'] ?? '') === 'admin'): ?>
                 <a href="<?= $routeBase ?>/suppliers">Fournisseurs</a>
+                <a href="<?= $routeBase ?>/admin/rounds/corrections">Corrections tournées</a>
             <?php endif; ?>
             <a data-entity="orders" data-action="view" href="<?= $routeBase ?>/orders">Commandes</a>
             <a data-entity="transfers" data-action="view" href="<?= $routeBase ?>/transferts">Transferts</a>

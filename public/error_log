@@ -1,0 +1,6 @@
+[12-Dec-2025 12:36:29 UTC] PHP Fatal error:  Uncaught PDOException: SQLSTATE[42S22]: Column not found: 1054 Unknown column 's.paid_amount' in 'SELECT' in /home/fidestci/app.hillemballage.ci/src/Support/DB.php:41
+Stack trace:
+#0 /home/fidestci/app.hillemballage.ci/src/Support/DB.php(41): PDOStatement->execute()
+#1 /home/fidestci/app.hillemballage.ci/public/index.php(5623): App\Support\DB::query()
+#2 {main}
+  thrown in /home/fidestci/app.hillemballage.ci/src/Support/DB.php on line 41

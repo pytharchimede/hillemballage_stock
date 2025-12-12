@@ -675,7 +675,8 @@ if (!str_starts_with($path, '/api/') && $path !== '/login') {
 }
 
 // Simple router (web + api v1)
-if (str_starts_with($path, '/api/v1')) {
+// Tolérer les URLs avec préfixe de script (ex: /public/api/v1/...)
+if (str_starts_with($path, '/api/v1') || str_starts_with($path, '/public/api/v1')) {
     // Categories listing
     if ($path === '/api/v1/categories' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         ensure_categories_table();
@@ -5608,6 +5609,153 @@ if (str_starts_with($path, '/api/v1')) {
         echo json_encode(['ok' => true, 'explicit' => $explicit, 'effective' => $effective]);
         exit;
     }
+    // Admin API: Fetch round details for corrections
+    if (preg_match('#/api/v1/admin/rounds/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        $u = requireAuth();
+        requireRole($u, ['admin']);
+        $roundId = (int)$m[1];
+        $round = DB::query('SELECT * FROM seller_rounds WHERE id=:id LIMIT 1', [':id' => $roundId])[0] ?? null;
+        if (!$round) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Tournée introuvable']);
+            exit;
+        }
+        $sales = DB::query('SELECT s.id, s.client_id, c.name AS client_name, s.total_amount, s.paid_amount, s.status, s.created_at FROM sales s LEFT JOIN clients c ON c.id=s.client_id WHERE s.round_id=:r', [':r' => $roundId]);
+        $items = DB::query('SELECT si.id, si.sale_id, si.product_id, p.name AS product_name, si.quantity, si.returned_quantity, si.unit_price FROM sale_items si LEFT JOIN products p ON p.id=si.product_id WHERE si.round_id=:r', [':r' => $roundId]);
+        $collections = DB::query('SELECT id, client_id, amount, method, created_at FROM collections WHERE round_id=:r', [':r' => $roundId]);
+        echo json_encode(['round' => $round, 'sales' => $sales, 'items' => $items, 'collections' => $collections]);
+        exit;
+    }
+    // Admin API: Apply corrections to a round
+    if (preg_match('#/api/v1/admin/rounds/corrections$#', $path) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
+        $u = requireAuth();
+        requireRole($u, ['admin']);
+        $payload = json_decode(file_get_contents('php://input'), true) ?: [];
+        $roundId = (int)($payload['round_id'] ?? 0);
+        if ($roundId <= 0) {
+            http_response_code(422);
+            echo json_encode(['error' => 'round_id manquant']);
+            exit;
+        }
+        DB::execute('START TRANSACTION');
+        try {
+            foreach (($payload['items'] ?? []) as $it) {
+                $id = (int)($it['id'] ?? 0);
+                $q = isset($it['quantity']) ? (int)$it['quantity'] : null;
+                $rq = isset($it['returned_quantity']) ? (int)$it['returned_quantity'] : null;
+                $up = isset($it['unit_price']) ? (int)$it['unit_price'] : null;
+                if ($id > 0) {
+                    $sets = [];
+                    $params = [':id' => $id];
+                    if ($q !== null) {
+                        $sets[] = 'quantity=:q';
+                        $params[':q'] = $q;
+                    }
+                    if ($rq !== null) {
+                        $sets[] = 'returned_quantity=:rq';
+                        $params[':rq'] = $rq;
+                    }
+                    if ($up !== null) {
+                        $sets[] = 'unit_price=:up';
+                        $params[':up'] = $up;
+                    }
+                    if ($sets) DB::execute('UPDATE sale_items SET ' . implode(',', $sets) . ' WHERE id=:id', $params);
+                }
+            }
+            foreach (($payload['sales'] ?? []) as $s) {
+                $sid = (int)($s['id'] ?? 0);
+                $paid = isset($s['paid_amount']) ? (int)$s['paid_amount'] : null;
+                if ($sid > 0 && $paid !== null) {
+                    DB::execute('UPDATE sales SET paid_amount=:p WHERE id=:id', [':p' => $paid, ':id' => $sid]);
+                }
+            }
+            foreach (($payload['collections'] ?? []) as $c) {
+                $cid = (int)($c['id'] ?? 0);
+                $amt = isset($c['amount']) ? (int)$c['amount'] : null;
+                $method = isset($c['method']) ? (string)$c['method'] : null;
+                if ($cid > 0) {
+                    $sets = [];
+                    $params = [':id' => $cid];
+                    if ($amt !== null) {
+                        $sets[] = 'amount=:a';
+                        $params[':a'] = $amt;
+                    }
+                    if ($method !== null) {
+                        $sets[] = 'method=:m';
+                        $params[':m'] = $method;
+                    }
+                    if ($sets) DB::execute('UPDATE collections SET ' . implode(',', $sets) . ' WHERE id=:id', $params);
+                }
+            }
+            // Recalcul strict des agrégats
+            try {
+                DB::execute('UPDATE seller_rounds sr SET 
+                    total_sales = (
+                        SELECT COALESCE(SUM(s.total_amount),0) FROM sales s WHERE s.round_id = sr.id
+                    ),
+                    total_paid = (
+                        SELECT COALESCE(SUM(s.paid_amount),0) FROM sales s WHERE s.round_id = sr.id
+                    )
+                WHERE sr.id = :r', [':r' => $roundId]);
+            } catch (\Throwable $e) {
+            }
+            DB::execute('COMMIT');
+            try {
+                audit_log_natural('Corrections appliquées sur tournée #' . $roundId, 'admin_round_corrections_apply', ['round_id' => $roundId]);
+            } catch (\Throwable $e) {
+            }
+            echo json_encode(['ok' => true]);
+        } catch (\Throwable $e) {
+            DB::execute('ROLLBACK');
+            http_response_code(500);
+            echo json_encode(['error' => 'Echec corrections']);
+        }
+        exit;
+    }
+    // Admin API: Delete sale with impacts
+    if (preg_match('#/api/v1/admin/sales/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'DELETE') {
+        $u = requireAuth();
+        requireRole($u, ['admin']);
+        $saleId = (int)$m[1];
+        DB::execute('START TRANSACTION');
+        try {
+            $sale = DB::query('SELECT id, client_id, round_id, total_amount, paid_amount FROM sales WHERE id=:id LIMIT 1', [':id' => $saleId])[0] ?? null;
+            if (!$sale) {
+                DB::execute('ROLLBACK');
+                http_response_code(404);
+                echo json_encode(['error' => 'Vente introuvable']);
+                exit;
+            }
+            DB::execute('DELETE FROM sale_items WHERE sale_id=:id', [':id' => $saleId]);
+            DB::execute('DELETE FROM collections WHERE sale_id=:id', [':id' => $saleId]);
+            DB::execute('DELETE FROM sales WHERE id=:id', [':id' => $saleId]);
+            if (!empty($sale['client_id'])) {
+                $delta = (int)$sale['total_amount'] - (int)$sale['paid_amount'];
+                DB::execute('UPDATE clients SET balance_cached = GREATEST(balance_cached - :d, 0) WHERE id=:c', [':d' => $delta, ':c' => (int)$sale['client_id']]);
+            }
+            if (!empty($sale['round_id'])) {
+                DB::execute('UPDATE seller_rounds sr SET 
+                    total_sales = (
+                        SELECT COALESCE(SUM(s.total_amount),0) FROM sales s WHERE s.round_id = sr.id
+                    ),
+                    total_paid = (
+                        SELECT COALESCE(SUM(s.paid_amount),0) FROM sales s WHERE s.round_id = sr.id
+                    )
+                WHERE sr.id = :r', [':r' => (int)$sale['round_id']]);
+            }
+            DB::execute('COMMIT');
+            try {
+                audit_log_natural('Suppression de la vente #' . $saleId . ' avec impacts comptables', 'admin_sale_delete', ['sale_id' => $saleId]);
+            } catch (\Throwable $e) {
+            }
+            echo json_encode(['deleted' => true]);
+        } catch (\Throwable $e) {
+            DB::execute('ROLLBACK');
+            http_response_code(500);
+            echo json_encode(['error' => 'Echec suppression vente']);
+        }
+        exit;
+    }
     // API fallback 404
     http_response_code(404);
     echo json_encode(['error' => 'Not found']);
@@ -5820,6 +5968,263 @@ if ($path === '/products') {
     include __DIR__ . '/../views/layout/header.php';
     include __DIR__ . '/../views/products.php';
     include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+
+// Admin: Correction tournée (seller rounds corrections)
+if ($path === '/admin/rounds/corrections') {
+    if (empty($_SESSION['user_id'])) {
+        header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/login');
+        exit;
+    }
+    $uid = (int)$_SESSION['user_id'];
+    $u = DB::query('SELECT * FROM users WHERE id=:id LIMIT 1', [':id' => $uid])[0] ?? null;
+    if (!$u || strtolower((string)$u['role']) !== 'admin') {
+        http_response_code(403);
+        echo 'Accès refusé';
+        exit;
+    }
+    try {
+        audit_log_natural('Consultation interface corrections des tournées (admin)', 'page_rounds_corrections_admin', ['route' => '/admin/rounds/corrections']);
+    } catch (\Throwable $e) {
+    }
+    include __DIR__ . '/../views/layout/header.php';
+    include __DIR__ . '/../views/seller_rounds_admin.php';
+    include __DIR__ . '/../views/layout/footer.php';
+    exit;
+}
+
+// Page de test: connexion + chargement tournée en une seule page
+if ($path === '/admin/rounds/test') {
+    // Affiche un formulaire simple et traite la soumission pour se connecter et charger une tournée
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        $email = trim((string)($_POST['email'] ?? ''));
+        $password = (string)($_POST['password'] ?? '');
+        $roundId = (int)($_POST['round_id'] ?? 0);
+        $uModel = new User();
+        $user = $uModel->findByEmail($email);
+        if ($user && password_verify($password, (string)$user['password_hash'])) {
+            $_SESSION['user_id'] = (int)$user['id'];
+            $_SESSION['user_role'] = (string)$user['role'];
+            // Charger la tournée comme l'API
+            try {
+                $round = DB::query('SELECT * FROM seller_rounds WHERE id=:id LIMIT 1', [':id' => $roundId])[0] ?? null;
+                if (!$round) {
+                    $error = 'Tournée introuvable';
+                } else {
+                    $sales = DB::query('SELECT s.id, s.client_id, c.name AS client_name, s.total_amount, s.paid_amount, s.status, s.created_at FROM sales s LEFT JOIN clients c ON c.id=s.client_id WHERE s.round_id=:r', [':r' => $roundId]);
+                    $items = DB::query('SELECT si.id, si.sale_id, si.product_id, p.name AS product_name, si.quantity, si.returned_quantity, si.unit_price FROM sale_items si JOIN sales s ON s.id=si.sale_id LEFT JOIN products p ON p.id=si.product_id WHERE s.round_id=:r', [':r' => $roundId]);
+                    $collections = DB::query('SELECT sp.id, s.client_id, sp.amount, sp.method, sp.paid_at AS created_at FROM sale_payments sp JOIN sales s ON s.id=sp.sale_id WHERE s.round_id=:r', [':r' => $roundId]);
+                    header('Content-Type: application/json');
+                    echo json_encode(['round' => $round, 'sales' => $sales, 'items' => $items, 'collections' => $collections]);
+                    exit;
+                }
+            } catch (\Throwable $e) {
+                $error = 'Erreur serveur lors du chargement de la tournée';
+            }
+        } else {
+            $error = 'Identifiants invalides';
+        }
+        // Afficher erreur et le formulaire à nouveau
+        echo '<!doctype html><html><head><meta charset="utf-8"><title>Test tournée admin</title></head><body>';
+        echo '<h3>Test connexion + chargement tournée</h3>';
+        if (!empty($error)) echo '<div style="color:red">' . htmlspecialchars($error) . '</div>';
+        echo '<form method="post" action="">'
+            . '<label>Email: <input name="email" type="email" required /></label><br />'
+            . '<label>Mot de passe: <input name="password" type="password" required /></label><br />'
+            . '<label>ID tournée: <input name="round_id" type="number" required /></label><br />'
+            . '<button type="submit">Tester</button>'
+            . '</form>';
+        echo '</body></html>';
+        exit;
+    } else {
+        echo '<!doctype html><html><head><meta charset="utf-8"><title>Test tournée admin</title></head><body>';
+        echo '<h3>Test connexion + chargement tournée</h3>';
+        echo '<form method="post" action="">'
+            . '<label>Email: <input name="email" type="email" required /></label><br />'
+            . '<label>Mot de passe: <input name="password" type="password" required /></label><br />'
+            . '<label>ID tournée: <input name="round_id" type="number" required /></label><br />'
+            . '<button type="submit">Tester</button>'
+            . '</form>';
+        echo '</body></html>';
+        exit;
+    }
+}
+
+// API: Fetch round details for admin corrections
+// Tolérer le préfixe script (ex: /public) dans l'URL
+if (preg_match('#/api/v1/admin/rounds/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'GET') {
+    $u = requireAuth();
+    requireRole($u, ['admin']);
+    $roundId = (int)$m[1];
+    try {
+        $round = DB::query('SELECT * FROM seller_rounds WHERE id=:id LIMIT 1', [':id' => $roundId])[0] ?? null;
+        if (!$round) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Tournée introuvable']);
+            exit;
+        }
+        // Ventes de la tournée (schema: sales.seller_round_id, sales.amount_paid)
+        $sales = DB::query('SELECT s.id, s.client_id, c.name AS client_name, s.total_amount, s.amount_paid, s.status, s.created_at FROM sales s LEFT JOIN clients c ON c.id=s.client_id WHERE s.seller_round_id=:r', [':r' => $roundId]);
+        // Articles affectés à la tournée (schema: seller_round_item avec qty_assigned, qty_returned)
+        $items = DB::query('SELECT sri.id, sri.round_id, sri.product_id, p.name AS product_name, sri.qty_assigned, sri.qty_returned FROM seller_round_item sri LEFT JOIN products p ON p.id=sri.product_id WHERE sri.round_id=:r', [':r' => $roundId]);
+        // Encaissements: utiliser sale_payments joints aux ventes de la tournée
+        $collections = DB::query('SELECT sp.id, s.client_id, sp.amount, sp.method, sp.paid_at AS created_at FROM sale_payments sp JOIN sales s ON s.id=sp.sale_id WHERE s.seller_round_id=:r', [':r' => $roundId]);
+        echo json_encode(['round' => $round, 'sales' => $sales, 'items' => $items, 'collections' => $collections]);
+        exit;
+    } catch (\Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'Erreur serveur lors du chargement de la tournée']);
+        exit;
+    }
+}
+
+// API: Apply corrections to quantities/payments/collections (admin)
+if (preg_match('#/api/v1/admin/rounds/corrections$#', $path) && $_SERVER['REQUEST_METHOD'] === 'PATCH') {
+    $u = requireAuth();
+    requireRole($u, ['admin']);
+    $payload = json_decode(file_get_contents('php://input'), true) ?: [];
+    $roundId = (int)($payload['round_id'] ?? 0);
+    if ($roundId <= 0) {
+        http_response_code(422);
+        echo json_encode(['error' => 'round_id manquant']);
+        exit;
+    }
+    DB::execute('START TRANSACTION');
+    try {
+        // Update sale items quantities/returns
+        foreach (($payload['items'] ?? []) as $it) {
+            $id = (int)($it['id'] ?? 0);
+            $q = isset($it['quantity']) ? (int)$it['quantity'] : null;
+            $rq = isset($it['returned_quantity']) ? (int)$it['returned_quantity'] : null;
+            $up = isset($it['unit_price']) ? (int)$it['unit_price'] : null;
+            if ($id > 0) {
+                $sets = [];
+                $params = [':id' => $id];
+                if ($q !== null) {
+                    $sets[] = 'quantity=:q';
+                    $params[':q'] = $q;
+                }
+                if ($rq !== null) {
+                    $sets[] = 'returned_quantity=:rq';
+                    $params[':rq'] = $rq;
+                }
+                if ($up !== null) {
+                    $sets[] = 'unit_price=:up';
+                    $params[':up'] = $up;
+                }
+                if ($sets) DB::execute('UPDATE sale_items SET ' . implode(',', $sets) . ' WHERE id=:id', $params);
+            }
+        }
+        // Update sales paid amounts
+        foreach (($payload['sales'] ?? []) as $s) {
+            $sid = (int)($s['id'] ?? 0);
+            $paid = isset($s['paid_amount']) ? (int)$s['paid_amount'] : null;
+            if ($sid > 0 && $paid !== null) {
+                DB::execute('UPDATE sales SET paid_amount=:p WHERE id=:id', [':p' => $paid, ':id' => $sid]);
+            }
+        }
+        // Update collections adjustments
+        foreach (($payload['collections'] ?? []) as $c) {
+            $cid = (int)($c['id'] ?? 0);
+            $amt = isset($c['amount']) ? (int)$c['amount'] : null;
+            $method = isset($c['method']) ? (string)$c['method'] : null;
+            if ($cid > 0) {
+                $sets = [];
+                $params = [':id' => $cid];
+                if ($amt !== null) {
+                    $sets[] = 'amount=:a';
+                    $params[':a'] = $amt;
+                }
+                if ($method !== null) {
+                    $sets[] = 'method=:m';
+                    $params[':m'] = $method;
+                }
+                if ($sets) DB::execute('UPDATE collections SET ' . implode(',', $sets) . ' WHERE id=:id', $params);
+            }
+        }
+        // Recalcule strict des agrégats de la tournée
+        try {
+            DB::execute('UPDATE seller_rounds sr SET 
+                total_sales = (
+                    SELECT COALESCE(SUM(s.total_amount),0) FROM sales s WHERE s.round_id = sr.id
+                ),
+                total_paid = (
+                    SELECT COALESCE(SUM(s.paid_amount),0) FROM sales s WHERE s.round_id = sr.id
+                )
+            WHERE sr.id = :r', [':r' => $roundId]);
+        } catch (\Throwable $e) {
+        }
+        DB::execute('COMMIT');
+        try {
+            audit_log_natural('Corrections appliquées sur tournée #' . $roundId, 'admin_round_corrections_apply', ['round_id' => $roundId]);
+        } catch (\Throwable $e) {
+        }
+        echo json_encode(['ok' => true]);
+    } catch (\Throwable $e) {
+        DB::execute('ROLLBACK');
+        http_response_code(500);
+        echo json_encode(['error' => 'Echec corrections']);
+    }
+    exit;
+}
+
+// API: Delete sale with accounting impacts (admin)
+if (preg_match('#/api/v1/admin/sales/(\d+)$#', $path, $m) && $_SERVER['REQUEST_METHOD'] === 'DELETE') {
+    $u = requireAuth();
+    requireRole($u, ['admin']);
+    $saleId = (int)$m[1];
+    // Wrap in transaction and delegate to service to adjust balances
+    DB::execute('START TRANSACTION');
+    try {
+        // Placeholder: load sale details
+        $sale = DB::query('SELECT id, client_id, round_id, total_amount, paid_amount FROM sales WHERE id=:id LIMIT 1', [':id' => $saleId])[0] ?? null;
+        if (!$sale) {
+            DB::execute('ROLLBACK');
+            http_response_code(404);
+            echo json_encode(['error' => 'Vente introuvable']);
+            exit;
+        }
+        // Delete items
+        DB::execute('DELETE FROM sale_items WHERE sale_id=:id', [':id' => $saleId]);
+        // Delete collections linked to this sale
+        DB::execute('DELETE FROM collections WHERE sale_id=:id', [':id' => $saleId]);
+        // Delete sale
+        DB::execute('DELETE FROM sales WHERE id=:id', [':id' => $saleId]);
+        // Adjust client balance (decrease due by total_amount - paid_amount)
+        if (!empty($sale['client_id'])) {
+            $delta = (int)$sale['total_amount'] - (int)$sale['paid_amount'];
+            DB::execute('UPDATE clients SET balance_cached = GREATEST(balance_cached - :d, 0) WHERE id=:c', [':d' => $delta, ':c' => (int)$sale['client_id']]);
+        }
+        // Adjust round seller cash (increase remaining since sale removed)
+        if (!empty($sale['round_id'])) {
+            DB::execute('UPDATE seller_rounds SET total_sales = GREATEST(total_sales - :t, 0), total_paid = GREATEST(total_paid - :p, 0) WHERE id=:r', [':t' => (int)$sale['total_amount'], ':p' => (int)$sale['paid_amount'], ':r' => (int)$sale['round_id']]);
+        }
+        // Recalcule strict des agrégats de la tournée après suppression
+        try {
+            if (!empty($sale['round_id'])) {
+                DB::execute('UPDATE seller_rounds sr SET 
+                    total_sales = (
+                        SELECT COALESCE(SUM(s.total_amount),0) FROM sales s WHERE s.round_id = sr.id
+                    ),
+                    total_paid = (
+                        SELECT COALESCE(SUM(s.paid_amount),0) FROM sales s WHERE s.round_id = sr.id
+                    )
+                WHERE sr.id = :r', [':r' => (int)$sale['round_id']]);
+            }
+        } catch (\Throwable $e) {
+        }
+        DB::execute('COMMIT');
+        try {
+            audit_log_natural('Suppression de la vente #' . $saleId . ' avec impacts comptables', 'admin_sale_delete', ['sale_id' => $saleId]);
+        } catch (\Throwable $e) {
+        }
+        echo json_encode(['deleted' => true]);
+    } catch (\Throwable $e) {
+        DB::execute('ROLLBACK');
+        http_response_code(500);
+        echo json_encode(['error' => 'Echec suppression vente']);
+    }
     exit;
 }
 if ($path === '/products/new') {
