@@ -44,12 +44,15 @@
     btnReset: document.getElementById("btn-log-reset"),
     btnExport: document.getElementById("btn-log-export"),
     btnExportPdf: document.getElementById("btn-log-export-pdf"),
+    btnToggleView: document.getElementById("btn-log-toggle-view"),
     grid: document.getElementById("logs-grid"),
     empty: document.getElementById("logs-empty"),
     prev: document.getElementById("logs-prev"),
     next: document.getElementById("logs-next"),
     pageLabel: document.getElementById("logs-page"),
   };
+
+  let simplified = false; // Vue simplifiée: afficher seulement Date, Utilisateur, Message
 
   function paramsToQuery() {
     const p = new URLSearchParams();
@@ -74,6 +77,24 @@
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
   }
+  // Extrait un libellé naturel si présent dans la ligne (natural_message, message, ou meta.message)
+  function extractNaturalMessage(r) {
+    if (!r) return "";
+    if (r.natural_message) return String(r.natural_message);
+    if (r.message) return String(r.message);
+    // Tenter de parser meta JSON pour y trouver un champ message
+    try {
+      const m = r.meta || r.Meta || null;
+      if (!m) return "";
+      if (typeof m === "string" && m.trim().length) {
+        const obj = JSON.parse(m);
+        if (obj && obj.message) return String(obj.message);
+      } else if (typeof m === "object" && m !== null) {
+        if (m.message) return String(m.message);
+      }
+    } catch (_) {}
+    return "";
+  }
 
   function render(rows) {
     if (!els.grid) return;
@@ -83,43 +104,71 @@
       return;
     }
     if (els.empty) els.empty.style.display = "none";
-    const html = [
-      '<table class="table"><thead><tr>\
-      <th>ID</th><th>Utilisateur</th><th>Action</th><th>Entité</th><th>Entité ID</th><th>Route</th><th>Méthode</th><th>IP</th><th>Date</th>\
-    </tr></thead><tbody>',
-    ];
-    rows.forEach((r) => {
+    const html = [];
+    if (simplified) {
       html.push(
-        "<tr>" +
-          "<td>" +
-          escapeHtml(r.id) +
-          "</td>" +
-          "<td>" +
-          escapeHtml(r.actor_name || "#" + (r.actor_user_id || "")) +
-          "</td>" +
-          "<td>" +
-          escapeHtml(r.action) +
-          "</td>" +
-          "<td>" +
-          escapeHtml(r.entity || "") +
-          "</td>" +
-          "<td>" +
-          escapeHtml(r.entity_id || "") +
-          "</td>" +
-          "<td>" +
-          escapeHtml(r.route) +
-          "</td>" +
-          "<td>" +
-          escapeHtml(r.method) +
-          "</td>" +
-          "<td>" +
-          escapeHtml(r.ip || "") +
-          "</td>" +
-          "<td>" +
-          escapeHtml(r.created_at) +
-          "</td>" +
-          "</tr>"
+        '<table class="table"><thead><tr>\
+        <th>Date</th><th>Utilisateur</th><th>Message</th>\
+      </tr></thead><tbody>'
       );
+    } else {
+      html.push(
+        '<table class="table"><thead><tr>\
+        <th>ID</th><th>Utilisateur</th><th>Message</th><th>Action</th><th>Entité</th><th>Entité ID</th><th>Route</th><th>Méthode</th><th>IP</th><th>Date</th>\
+      </tr></thead><tbody>'
+      );
+    }
+    rows.forEach((r) => {
+      if (simplified) {
+        html.push(
+          "<tr>" +
+            "<td>" +
+            escapeHtml(r.created_at) +
+            "</td>" +
+            "<td>" +
+            escapeHtml(r.actor_name || "#" + (r.actor_user_id || "")) +
+            "</td>" +
+            "<td>" +
+            escapeHtml(r.natural_message || r.message || "") +
+            "</td>" +
+            "</tr>"
+        );
+      } else {
+        html.push(
+          "<tr>" +
+            "<td>" +
+            escapeHtml(r.id) +
+            "</td>" +
+            "<td>" +
+            escapeHtml(r.actor_name || "#" + (r.actor_user_id || "")) +
+            "</td>" +
+            "<td>" +
+            escapeHtml(r.natural_message || r.message || "") +
+            "</td>" +
+            "<td>" +
+            escapeHtml(r.action) +
+            "</td>" +
+            "<td>" +
+            escapeHtml(r.entity || "") +
+            "</td>" +
+            "<td>" +
+            escapeHtml(r.entity_id || "") +
+            "</td>" +
+            "<td>" +
+            escapeHtml(r.route) +
+            "</td>" +
+            "<td>" +
+            escapeHtml(r.method) +
+            "</td>" +
+            "<td>" +
+            escapeHtml(r.ip || "") +
+            "</td>" +
+            "<td>" +
+            escapeHtml(r.created_at) +
+            "</td>" +
+            "</tr>"
+        );
+      }
     });
     html.push("</tbody></table>");
     els.grid.innerHTML = html.join("");
@@ -132,25 +181,48 @@
     url +=
       (url.indexOf("?") > -1 ? "&" : "?") +
       (token ? "api_token=" + encodeURIComponent(token) : "");
-    let r = await fetch(url, { headers: authHeaders(token) });
+
+    let r;
+    try {
+      r = await fetch(url, { headers: authHeaders(token) });
+    } catch (e) {
+      alert("Erreur réseau lors du chargement des logs");
+      return;
+    }
+
     if (r.status === 401) {
       token = (await refreshSessionToken()) || token;
       let url2 = routeBase + "/api/v1/audit-logs" + (qs ? "?" + qs : "");
       url2 +=
         (url2.indexOf("?") > -1 ? "&" : "?") +
         (token ? "api_token=" + encodeURIComponent(token) : "");
-      r = await fetch(url2, { headers: authHeaders(token) });
+      try {
+        r = await fetch(url2, { headers: authHeaders(token) });
+      } catch (e) {
+        alert("Erreur réseau lors du chargement des logs (après refresh)");
+        return;
+      }
     }
+
     if (!r.ok) {
+      // Essayer de lire un message d'erreur JSON
       try {
         const j = await r.json();
         alert("Erreur " + r.status + ": " + (j.error || "Chargement"));
       } catch (_) {
-        alert("Erreur chargement");
+        alert("Erreur chargement (code " + r.status + ")");
       }
       return;
     }
-    const payload = await r.json();
+
+    let payload;
+    try {
+      payload = await r.json();
+    } catch (e) {
+      alert("Réponse invalide du serveur");
+      return;
+    }
+
     const rows = Array.isArray(payload) ? payload : payload.items || [];
     lastHasMore = !!(payload && payload.has_more);
     if (els.pageLabel) {
@@ -212,6 +284,12 @@
         (url.indexOf("?") > -1 ? "&" : "?") +
         (token ? "api_token=" + encodeURIComponent(token) : "");
       window.open(url, "_blank");
+    });
+
+  if (els.btnToggleView)
+    els.btnToggleView.addEventListener("click", function () {
+      simplified = !simplified;
+      load();
     });
 
   // Auto-load on page open

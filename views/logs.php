@@ -62,6 +62,10 @@ $assetBase = preg_replace('#/public$#', '', $scriptDir);
             <input type="number" id="log-limit" class="form-control compact" value="200" min="1" max="1000" />
         </div>
         <div class="filter-row">
+            <label>Affichage</label>
+            <button id="btn-log-toggle-view" class="btn small btn-ghost"><i class="fa fa-eye"></i> Basculer vue simplifiée</button>
+        </div>
+        <div class="filter-row">
             <button id="btn-log-search" class="btn small"><i class="fa fa-search"></i> Rechercher</button>
             <button id="btn-log-reset" class="btn small btn-ghost"><i class="fa fa-eraser"></i> Réinitialiser</button>
             <button id="btn-log-export" class="btn small btn-outline-main"><i class="fa fa-file-export"></i> Export CSV</button>
